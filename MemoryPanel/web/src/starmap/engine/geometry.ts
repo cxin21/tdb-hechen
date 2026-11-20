@@ -8,7 +8,7 @@ export type Vec3 = { x: number; y: number; z: number };
 export interface MapNode {
   id: string;
   label: string;
-  /** 图层：L0 原文 / L1 记忆 / L2 日目录 / L3 结论 / person 人物 / day 日期 */
+  /** 图层：L0 对话原文 / L1 原子记忆 / L2 场景记忆 / L3 核心记忆 / person 人物 / day 日期 */
   kind: 'L0' | 'L1' | 'L2' | 'L3' | 'person' | 'day';
   region: number;
   /** 显著性 0..1，决定光点大小与亮度 */
@@ -24,7 +24,7 @@ export interface MapLink {
   b: number;
   /** 0..1 关系强度 */
   weight: number;
-  kind: 'session' | 'person' | 'ref';
+  kind: 'session' | 'person' | 'ref' | 'extract';
 }
 
 export interface StarPoint extends Vec3 {

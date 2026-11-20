@@ -21,8 +21,9 @@ export function useCodeSources() {
   const { t } = useTranslation();
   const [sources, setSources] = useState<CodeGraphDetail[]>([]);
   const [loading, setLoading] = useState(false);
-  // 默认展示 Agent 资产（fixed），避免用户误以为自己的资产在「团队资产」里
-  const [scopeTab, setScopeTab] = useState<ScopeTab>('fixed');
+  /* 与 Wiki 同一口径：完整视图默认团队池，旧壳默认 Agent 资产。 */
+  const embedded = typeof window !== "undefined" && /(?:^|[?&])full=1(?:&|$)/.test(window.location.hash);
+  const [scopeTab, setScopeTab] = useState<ScopeTab>(embedded ? "team" : "fixed");
   const [keyword, setKeyword] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [viewMode, setViewMode] = useState<ViewMode>('card');

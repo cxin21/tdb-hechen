@@ -1,11 +1,28 @@
 /**
- * starmap/theme/ui.tsx — 深空 HUD 基础组件。
+ * starmap/theme/ui.tsx — 旧版 HUD 组件的**兼容层**（P6）。
  *
- * 只做观感与可访问性，不含业务；所有业务星门复用这里，避免各写一套。
+ * 这些名字（Card2 / StatRow / Btn / Pill / Fields / Empty / Skeleton / Note / Seg / Dialog）
+ * 还被四个旧站页与总览侧栏引用。现在它们全部**转发到 kit**：
+ *  - DOM 里不再出现 `.card2` / `.ch-en` / `.pill` / `.fields` / `.dlg` 这些旧类名；
+ *  - 视觉口径统一由 `kit.css` + tokens 决定（实底 Surface、无英文副标、无填充块选中态）；
+ *  - 组件签名保持不变，调用点零改动。
+ *
+ * 真正的删除要等旧站页被 P7 重写；在那之前这里是唯一出口，别再往这个文件加新组件。
  */
-import { useEffect, useId, useRef, type CSSProperties, type ReactNode } from 'react';
+import { useId, type CSSProperties, type ReactNode } from 'react';
+import {
+  Dialog as KitDialog,
+  Empty as KitEmpty,
+  KvList,
+  MetricRow,
+  Note as KitNote,
+  Seg as KitSeg,
+  Skeleton as KitSkeleton,
+  Surface,
+  Tag,
+} from '../kit';
 
-/* ---------- 卡片外壳 ---------- */
+/* ---------- 卡片外壳 → Surface（丢掉 en 英文副标与 live 呼吸点） ---------- */
 export function Card2(props: {
   title?: ReactNode;
   en?: string;
@@ -16,37 +33,18 @@ export function Card2(props: {
   children?: ReactNode;
 }) {
   return (
-    <div className={'card2' + (props.className ? ' ' + props.className : '')} style={props.style}>
-      {props.title !== undefined && (
-        <div className="ch">
-          <span className="ch-zh">{props.title}</span>
-          {props.en && <span className="ch-en">{props.en}</span>}
-          <span className="ch-right">
-            {props.right}
-            {props.live && <i className="live-dot" />}
-          </span>
-        </div>
-      )}
+    <Surface title={props.title} aside={props.right} className={props.className} style={props.style}>
       {props.children}
-    </div>
+    </Surface>
   );
 }
 
-/* ---------- 指标格 ---------- */
+/* ---------- 指标格 → MetricRow（去掉格线） ---------- */
 export function StatRow(props: { items: { label: string; value: ReactNode }[] }) {
-  return (
-    <div className="stat-row" style={{ gridTemplateColumns: `repeat(${Math.max(props.items.length, 1)}, 1fr)` }}>
-      {props.items.map((it, i) => (
-        <div className="stat-cell" key={i}>
-          <b>{it.value}</b>
-          <span>{it.label}</span>
-        </div>
-      ))}
-    </div>
-  );
+  return <MetricRow items={props.items.map((it) => ({ k: it.label, v: it.value }))} />;
 }
 
-/* ---------- 按钮 ---------- */
+/* ---------- 按钮 → kit 按钮类 ---------- */
 export function Btn(props: {
   children: ReactNode;
   onClick?: () => void;
@@ -58,11 +56,10 @@ export function Btn(props: {
   title?: string;
   type?: 'button' | 'submit';
 }) {
-  const cls = ['sm-btn'];
-  if (props.primary) cls.push('primary');
-  if (props.danger) cls.push('danger');
-  if (props.ghost) cls.push('ghost');
-  if (props.small) cls.push('sm');
+  const cls = ['stk-btn'];
+  if (props.ghost) cls.push('is-ghost');
+  if (props.danger) cls.push('is-danger');
+  if (props.small) cls.push('is-sm');
   return (
     <button
       type={props.type ?? 'button'}
@@ -76,59 +73,39 @@ export function Btn(props: {
   );
 }
 
-/* ---------- 药丸 ---------- */
+/* ---------- 药丸 → Tag ---------- */
 export function Pill(props: { children: ReactNode; tone?: 'on' | 'ok' | 'warn' | 'bad'; title?: string }) {
+  const tone = props.tone === 'on' ? 'ink' : props.tone;
   return (
-    <span className={'pill' + (props.tone ? ' ' + props.tone : '')} title={props.title}>
+    <Tag tone={tone} title={props.title}>
       {props.children}
-    </span>
+    </Tag>
   );
 }
 
-/* ---------- 字段列表 ---------- */
-export function Fields(props: { items: { k: string; v: ReactNode }[] }) {
-  return (
-    <dl className="fields">
-      {props.items.map((it, i) => (
-        <div key={i} style={{ display: 'contents' }}>
-          <dt>{it.k}</dt>
-          <dd>{it.v ?? <span className="sm-dim2">—</span>}</dd>
-        </div>
-      ))}
-    </dl>
-  );
+/* ---------- 字段列表 → KvList ---------- */
+export function Fields(props: { items: { k: string; v: ReactNode; mono?: boolean }[] }) {
+  return <KvList items={props.items} />;
 }
 
-/* ---------- 空态 ---------- */
+/* ---------- 空态 → kit Empty ---------- */
 export function Empty(props: { text: string; action?: ReactNode; hint?: string }) {
-  return (
-    <div className="st-empty">
-      <div style={{ opacity: 0.5, fontSize: 18, letterSpacing: '0.2em' }}>· · ·</div>
-      <div>{props.text}</div>
-      {props.hint && <div className="sm-dim2" style={{ fontSize: 10, maxWidth: 280 }}>{props.hint}</div>}
-      {props.action}
-    </div>
-  );
+  return <KitEmpty title={props.text} hint={props.hint} action={props.action} />;
 }
 
-/* ---------- 骨架 ---------- */
+/* ---------- 骨架 → kit Skeleton ---------- */
 export function Skeleton(props: { rows?: number; height?: number }) {
-  const rows = props.rows ?? 4;
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 7, padding: 2 }}>
-      {Array.from({ length: rows }).map((_, i) => (
-        <div key={i} className="sk" style={{ height: props.height ?? 12, width: `${92 - (i % 4) * 13}%` }} />
-      ))}
-    </div>
-  );
+  return <KitSkeleton rows={props.rows ?? 4} />;
 }
 
-/* ---------- 提示条 ---------- */
+/* ---------- 提示条 → kit Note ---------- */
 export function Note(props: { children: ReactNode; tone?: 'bad' | 'warn' | 'ok' }) {
-  return <div className={'sm-note' + (props.tone ? ' ' + props.tone : '')}>{props.children}</div>;
+  if (props.tone === 'bad') return <KitNote tone="bad">{props.children}</KitNote>;
+  if (props.tone === 'warn') return <KitNote tone="warn">{props.children}</KitNote>;
+  return <KitNote>{props.children}</KitNote>;
 }
 
-/* ---------- 分段控件 ---------- */
+/* ---------- 分段控件 → kit Seg ---------- */
 export function Seg<T extends string>(props: {
   value: T;
   options: { value: T; label: ReactNode; title?: string }[];
@@ -136,35 +113,16 @@ export function Seg<T extends string>(props: {
   size?: 'sm';
 }) {
   return (
-    <div style={{ display: 'inline-flex', gap: 2, padding: 2, borderRadius: 8, background: 'rgba(10,16,28,.6)', border: '1px solid var(--hair)' }}>
-      {props.options.map((o) => {
-        const on = o.value === props.value;
-        return (
-          <button
-            key={o.value}
-            title={o.title}
-            onClick={() => props.onChange(o.value)}
-            style={{
-              height: props.size === 'sm' ? 20 : 24,
-              padding: props.size === 'sm' ? '0 7px' : '0 10px',
-              borderRadius: 6,
-              fontSize: props.size === 'sm' ? 9.5 : 10.5,
-              letterSpacing: '0.04em',
-              color: on ? 'var(--ink)' : 'var(--dim2)',
-              background: on ? 'rgba(60,120,200,.22)' : 'transparent',
-              border: '1px solid ' + (on ? 'rgba(127,200,255,.36)' : 'transparent'),
-              transition: 'all .16s',
-            }}
-          >
-            {o.label}
-          </button>
-        );
-      })}
-    </div>
+    <KitSeg
+      value={props.value}
+      options={props.options}
+      onChange={props.onChange}
+      size={props.size === 'sm' ? 'sm' : 'md'}
+    />
   );
 }
 
-/* ---------- 对话框 ---------- */
+/* ---------- 对话框 → kit Dialog（补 Esc / 焦点 / 遮罩行为） ---------- */
 export function Dialog(props: {
   title: ReactNode;
   en?: string;
@@ -173,52 +131,29 @@ export function Dialog(props: {
   footer?: ReactNode;
   width?: number;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        props.onClose();
-      }
-    };
-    window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, [props.onClose]);
   return (
-    <div className="dlg-veil" onMouseDown={(e) => { if (e.target === e.currentTarget) props.onClose(); }}>
-      <div className="dlg" ref={ref} style={props.width ? { width: Math.min(props.width, 960) } : undefined} role="dialog" aria-modal="true">
-        <div className="ch">
-          <span className="ch-zh">{props.title}</span>
-          {props.en && <span className="ch-en">{props.en}</span>}
-          <span className="ch-right">
-            <Btn ghost small onClick={props.onClose} title="关闭">✕</Btn>
-          </span>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>{props.children}</div>
-        {props.footer && (
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>{props.footer}</div>
-        )}
-      </div>
-    </div>
+    <KitDialog title={props.title} onClose={props.onClose} footer={props.footer} width={props.width}>
+      {props.children}
+    </KitDialog>
   );
 }
 
-/* ---------- 表单行 ---------- */
+/* ---------- 表单行（唯一没迁移的旧件：它只是 label + 子元素，没有视觉债） ---------- */
 export function Field(props: { label: string; hint?: string; children: ReactNode; required?: boolean }) {
   const id = useId();
   return (
-    <label htmlFor={id} style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-      <span className="sm-label">
+    <label htmlFor={id} className="stk-field-label">
+      <span className="stk-field-k">
         {props.label}
-        {props.required && <span style={{ color: 'var(--bad)' }}> *</span>}
+        {props.required && <span className="stk-field-req"> *</span>}
       </span>
       {props.children}
-      {props.hint && <span className="sm-dim2" style={{ fontSize: 9.5 }}>{props.hint}</span>}
+      {props.hint && <span className="stk-field-hint">{props.hint}</span>}
     </label>
   );
 }
 
-/* ---------- 时间/数字格式 ---------- */
+/* ---------- 时间/数字格式（纯函数，与视觉无关） ---------- */
 export function formatTime(input?: string | number | null): string {
   if (input === undefined || input === null || input === '') return '—';
   const d = typeof input === 'number' ? new Date(input) : new Date(input);

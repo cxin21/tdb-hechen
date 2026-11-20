@@ -11,6 +11,8 @@
  *   - 所有函数返回 Promise<T>，失败抛 ApiError。
  */
 import { getPanelSession, clearPanelSession } from '../panelSession';
+import { emitMutation } from './mutation-bus';
+import { metaWriteScopes } from './write-scopes';
 import { formatApiErrorMessage } from '../error-message';
 import type { MetaEnvelope, PaginatedResult, PublicUser } from './types';
 
@@ -170,6 +172,9 @@ export async function getCurrentUser(): Promise<PublicUser> {
       rawMessage: envelope.message || 'empty meta response',
     });
   }
+  // 团队 / agent 结构一变，星图里所有 agent 段与 team 段都不可信 → 全清
+  const scopes = metaWriteScopes(action);
+  if (scopes) emitMutation(...scopes);
   return envelope.data;
 }
 

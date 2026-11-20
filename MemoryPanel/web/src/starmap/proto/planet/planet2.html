@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>灵魂星球 v2 · Kenney 资产</title>
+<style>
+ html,body{margin:0;height:100%;overflow:hidden;background:#eaf8ff;font-family:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif}
+ #c{display:block;width:100%;height:100%}
+ #panel{position:fixed;left:22px;top:20px;line-height:1.55;color:#123;font-size:13px;letter-spacing:.01em}
+ #panel b{font-size:15px;font-weight:600}
+ .tag{display:inline-block;padding:2px 7px;border-radius:999px;background:#fff;color:#246;font-size:11px;margin-left:6px;border:1px solid #cfe4f2}
+ #hud{position:fixed;left:22px;bottom:20px;font-size:12px;color:#24506b}
+ #legend{position:fixed;right:22px;top:20px;font-size:12px;color:#24506b;text-align:right;line-height:1.7}
+ .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+</style></head>
+<body>
+<canvas id="c"></canvas>
+<div id="panel"><b>灵魂星球</b><span class="tag">示例数据</span><br>大陆承载四条线，灵魂埋在地核</div>
+<div id="legend">
+ <div><span class="dot" style="background:#f08aa8"></span>记忆</div>
+ <div><span class="dot" style="background:#8fd14f"></span>典籍</div>
+ <div><span class="dot" style="background:#6fa8dc"></span>代码</div>
+ <div><span class="dot" style="background:#e8c46a"></span>技艺</div>
+</div>
+<div id="hud">拖动旋转 · 点击大陆查看</div>
+<script type="importmap">{"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/"}}</script>
+<script type="module" src="./planet2.js"></script>
+</body></html>

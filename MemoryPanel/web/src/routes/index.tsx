@@ -7,7 +7,7 @@
  * 旧版 ConsoleLayout 与九个页面整体退到 /legacy/*：新壳成熟前，
  * 任何被重画漏掉的操作都还能在旧界面里做完，数据与鉴权链完全共用。
  */
-import { createHashRouter, type RouteObject } from 'react-router-dom';
+import { Navigate, createHashRouter, type RouteObject } from 'react-router-dom';
 import { ConsoleLayout } from '@/layouts/ConsoleLayout';
 import StarmapLayout from '@/starmap/StarmapLayout';
 import { StarmapProvider } from '@/starmap/state/StarmapProvider';
@@ -48,6 +48,8 @@ export const routes: RouteObject[] = [
       { path: 'team/agents', element: <TeamStation /> },
       { path: 'team/api-keys', element: <TeamStation /> },
       { path: 'settings', element: <SettingsStation /> },
+      /* 未知子路径留在星图上，不再整屏空白；旧壳「使用说明」指向 /guide，也落在这里 */
+      { path: '*', element: null },
     ],
   },
   {
@@ -66,6 +68,8 @@ export const routes: RouteObject[] = [
       { path: 'settings', element: <SettingsPage /> },
     ],
   },
+  /* 顶层兜底：任何没匹配上的 hash 都回星图 */
+  { path: '*', element: <Navigate to="/" replace /> },
 ];
 
 /**

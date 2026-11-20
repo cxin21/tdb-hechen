@@ -10,6 +10,7 @@
  * 统一交给 lib/agent-persona-form.ts 的 parseAgentPersona 归一，调用方不用关心。
  */
 import { ApiError, META_PREFIX, request } from './base';
+import { emitMutation } from './mutation-bus';
 import type { MetaEnvelope } from './types';
 import { getPanelSession } from '../panelSession';
 import {
@@ -63,5 +64,8 @@ export async function saveAgentPersona(
     'agent-persona/save',
     buildPersonaSaveBody(agentId, name, draft),
   );
+  // 人格一改，人格恒星云（九块 / 六轴 / 版本）与总览的 persona 段全部过期。
+  // 走总线而不是各调用点自己清：这里是人格唯一的写入口（meta 白名单 agent-persona/save）。
+  emitMutation('persona');
   return parseAgentPersona(data);
 }

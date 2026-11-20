@@ -12,6 +12,8 @@
  */
 
 import { getPanelSession } from '../panelSession';
+import { emitMutation } from './mutation-bus';
+import { panelWriteScopes } from './write-scopes';
 import { formatApiErrorMessage } from '../error-message';
 import i18n from '@/i18n';
 
@@ -72,6 +74,9 @@ async function panelPost<T>(path: string, body?: unknown): Promise<T> {
       env.request_id,
     );
   }
+  // 写成功后才失效（失败不失效：继续用旧数据比拿旧数据当新数据安全）
+  const scopes = panelWriteScopes(path);
+  if (scopes) emitMutation(...scopes);
   return env.data;
 }
 
@@ -189,6 +194,48 @@ export interface GraphData {
   nodes: GraphNode[];
   edges: GraphEdge[];
   communities?: { id: number; nodeCount: number; topNodes: string[] }[];
+  total?: number;
+  truncated?: boolean;
+}
+
+export interface WikiGraphQuery {
+  community?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface CodeGraphStructureNode {
+  id: string;
+  kind: string;
+  name: string;
+  qualifiedName: string;
+  filePath: string;
+  language: string;
+  startLine: number;
+  endLine: number;
+  signature: string;
+  isExported: boolean;
+}
+
+export interface CodeGraphStructureEdge {
+  source: string;
+  target: string;
+  kind: string;
+  line: number;
+}
+
+export interface CodeGraphStructure {
+  nodes: CodeGraphStructureNode[];
+  edges: CodeGraphStructureEdge[];
+  total: number;
+  truncated: boolean;
+}
+
+export interface CodeGraphStructureQuery {
+  kinds?: string[];
+  edgeKinds?: string[];
+  limit?: number;
+  offset?: number;
 }
 
 export interface WikiPage {
@@ -507,8 +554,14 @@ export const knowledgeApi = {
     /** 删除 */
     delete: (wikiId: string): Promise<void> => panelPost('/wiki/delete', { wiki_ids: [wikiId] }),
 
-    /** 图谱 */
-    graph: (wikiId: string): Promise<GraphData> => panelPost('/wiki/graph', { wiki_id: wikiId }),
+    /** 图谱。community/limit/offset 与 BFF wikiGraph 同一份契约，不另造分页。 */
+    graph: (wikiId: string, query?: WikiGraphQuery): Promise<GraphData> =>
+      panelPost('/wiki/graph', {
+        wiki_id: wikiId,
+        ...(query?.community ? { community: query.community } : {}),
+        ...(typeof query?.limit === 'number' ? { limit: query.limit } : {}),
+        ...(typeof query?.offset === 'number' ? { offset: query.offset } : {}),
+      }),
 
     /** 页面列表 */
     pages: async (wikiId: string): Promise<WikiPage[]> => {
@@ -645,6 +698,16 @@ export const knowledgeApi = {
     /** 代码探索（返回 { text, isError } 文本块） */
     explore: (codeGraphId: string, query: string): Promise<{ text: string; isError: boolean }> =>
       panelPost('/code-graph/explore', { code_graph_id: codeGraphId, query }),
+
+    /** 结构图：kinds / edgeKinds / limit / offset，与 BFF codeGraphStructure 同一份契约。 */
+    structure: (codeGraphId: string, query?: CodeGraphStructureQuery): Promise<CodeGraphStructure> =>
+      panelPost('/code-graph/graph', {
+        code_graph_id: codeGraphId,
+        ...(query?.kinds?.length ? { kinds: query.kinds } : {}),
+        ...(query?.edgeKinds?.length ? { edgeKinds: query.edgeKinds } : {}),
+        ...(typeof query?.limit === 'number' ? { limit: query.limit } : {}),
+        ...(typeof query?.offset === 'number' ? { offset: query.offset } : {}),
+      }),
 
     /** 详情（用于 sync 后轮询） */
     get: (codeGraphId: string): Promise<CodeGraphDetail> =>

@@ -10,6 +10,8 @@
 
 import { getPanelSession } from '../panelSession';
 import { formatApiErrorMessage } from '../error-message';
+import { emitMutation } from './mutation-bus';
+import { skillWriteScopes } from './write-scopes';
 import i18n from '@/i18n';
 
 // ========================= Envelope =========================
@@ -143,6 +145,8 @@ async function skillCall<T>(
       envelope.request_id,
     );
   }
+  const scopes = skillWriteScopes(action);
+  if (scopes) emitMutation(...scopes);
   return envelope.data;
 }
 

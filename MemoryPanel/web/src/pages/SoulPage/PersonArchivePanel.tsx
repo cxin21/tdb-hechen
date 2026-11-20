@@ -64,11 +64,16 @@ function formatAt(at: string | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** 关系里「对方」的名字：out 用 objName；in 的 objName 是本人，得按 counterpartKey 反查。 */
+/**
+ * 关系里「对方」的名字：优先用 core 回好的 counterpartName（两个方向都有，已按 key 解析、
+ * 也覆盖了墓碑合并）；老 core 没这个字段时，才按 key 从本地人物列表反查。
+ * 注意 in 方向的 objName 是本人，任何时候都不能拿来当对方名。
+ */
 function counterpartName(
   rel: SoulProfileRelation,
   nameByKey: Map<string, string>,
 ): string {
+  if (typeof rel.counterpartName === 'string' && rel.counterpartName !== '') return rel.counterpartName;
   if (rel.direction === 'in') {
     return (rel.counterpartKey ? nameByKey.get(rel.counterpartKey) : undefined) ?? '没有登记的人';
   }

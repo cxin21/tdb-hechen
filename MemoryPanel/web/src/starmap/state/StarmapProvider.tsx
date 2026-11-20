@@ -18,6 +18,7 @@ import { chatMemoryApi, type ChatMemoryBlock } from '@/lib/teamApi';
 import { fetchSoulPersons } from '@/lib/api/chat-memory-soul';
 import { useBackendStore } from '@/stores/backend';
 import { useAuthStore } from '@/stores/auth';
+import { setCacheUser } from '../cache';
 import { useAgents, useTeams } from '@/services';
 
 function emptyLayer(layer: string) {
@@ -50,6 +51,8 @@ export interface StarmapContextValue {
   teamId: string | null;
   teamName: string;
   teams: Array<{ team_id: string; name: string }>;
+  teamsLoading: boolean;
+  agentsLoading: boolean;
   setTeamId: (id: string) => void;
   agents: Array<{ agent_id: string; name: string }>;
   activeAgentId: string | null;
@@ -78,11 +81,16 @@ const EMPTY: StarmapGraph = {
 };
 
 export function StarmapProvider({ children }: { children: ReactNode }) {
-  const { teams, activeTeamId, activeTeam } = useTeams();
+  const { teams, activeTeamId, activeTeam, loading: teamsLoading } = useTeams();
   const teamId = activeTeamId;
   const auth = useAuthStore((s) => s.auth);
   const userId = auth && typeof auth === 'object' ? auth.user_id : undefined;
   const { agents: rawAgents, loading: agentsLoading } = useAgents(teamId);
+
+  /* 缓存表按用户隔离：换用户/登出/401 一律清空，避免上一个人的读数漏给下一个人 */
+  useEffect(() => {
+    setCacheUser(userId);
+  }, [userId]);
 
   const agents = useMemo(
     () => rawAgents.map((a) => ({ agent_id: a.agent_id, name: a.name })),
@@ -194,8 +202,8 @@ export function StarmapProvider({ children }: { children: ReactNode }) {
       });
     const load = async () => {
       const [l1, l2, l3, persons] = await Promise.all([
-        settle(chatMemoryApi.layer(activeBlockId, 'L1', 240), emptyLayer('L1')),
-        settle(chatMemoryApi.layer(activeBlockId, 'L2', 80), emptyLayer('L2')),
+        settle(chatMemoryApi.layer(activeBlockId, 'L1', 1200), emptyLayer('L1')),
+        settle(chatMemoryApi.layer(activeBlockId, 'L2', 140), emptyLayer('L2')),
         settle(chatMemoryApi.layer(activeBlockId, 'L3', 80), emptyLayer('L3')),
         settle(fetchSoulPersons({ teamId, userId, agentId: activeAgentId ?? undefined }), {
           persons: [],
@@ -241,6 +249,8 @@ export function StarmapProvider({ children }: { children: ReactNode }) {
       teamId,
       teamName: activeTeam?.name ?? '',
       teams: teams.map((t) => ({ team_id: t.team_id, name: t.name })),
+      teamsLoading,
+      agentsLoading,
       setTeamId: (id: string) => useBackendStore.getState().setActiveTeamId(id),
       agents,
       activeAgentId,
@@ -268,6 +278,7 @@ export function StarmapProvider({ children }: { children: ReactNode }) {
       setActiveAgentId,
       blocks,
       blocksLoading,
+      teamsLoading,
       agentsLoading,
       activeBlockId,
       setActiveBlockId,

@@ -1,0 +1,824 @@
+/* ============================================================
+ * kit.css — 星图组件层唯一样式文件（S1）
+ * 规矩（可用 __tests__/kit-discipline.test.ts 验证）：
+ *  1. 颜色/字号/圆角只取 tokens.css 变量，本文件不出现 16 进制颜色；
+ *  2. 禁 backdrop-filter / 渐变文字 / text-transform: uppercase / transition: all；
+ *  3. box-shadow 只允许 inset（左/底线），不允许外发光；
+ *  4. 选中态只有一种语言：文字转 --ink + 底部或左侧 2px 层色短线（不填充块）。
+ * ============================================================ */
+
+/* ---------- Surface ---------- */
+.starmap-root .stk-surface {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 11px;
+  padding: 12px;
+  min-width: 0;
+}
+.starmap-root .stk-surface.is-dense { padding: 8px; }
+
+.starmap-root .stk-surface-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  min-height: 18px;
+}
+.starmap-root .stk-surface-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.starmap-root .stk-surface-aside {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  color: var(--dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Row ---------- */
+.starmap-root .stk-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 6px;
+  border-radius: 6px;
+  color: var(--dim);
+  font-size: 11.5px;
+  transition: background-color 150ms var(--ease-out), color 150ms var(--ease-out);
+}
+.starmap-root .stk-row:hover:not(.is-disabled) {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.starmap-root .stk-row.is-active {
+  color: var(--ink);
+  /* 选中只靠「文字转亮 + 左侧 2px 层色短线」，不加底色块：
+     加了底色就和 hover 的填充块同一个长相，被读成「选中＝高亮一行」而不是「这一颗星」。 */
+  box-shadow: inset 2px 0 0 var(--layer-l1);
+}
+.starmap-root .stk-row.is-disabled { opacity: 0.45; }
+
+.starmap-root .stk-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.starmap-root button.stk-row-main { cursor: pointer; }
+.starmap-root button.stk-row-main:disabled { cursor: default; }
+
+.starmap-root .stk-row-lead {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+.starmap-root .stk-row-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.starmap-root .stk-row-meta {
+  flex: none;
+  margin-left: auto;
+  color: var(--dim2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.starmap-root .stk-row-tail {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+
+/* ---------- 层色圆点（tone） ---------- */
+.starmap-root .stk-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--dim2);
+}
+.starmap-root .stk-dot--l0 { background: var(--layer-l0); }
+.starmap-root .stk-dot--l1 { background: var(--layer-l1); }
+.starmap-root .stk-dot--l2 { background: var(--layer-l2); }
+.starmap-root .stk-dot--l3 { background: var(--layer-l3); }
+.starmap-root .stk-dot--ok { background: var(--ok); }
+.starmap-root .stk-dot--warn { background: var(--warn); }
+.starmap-root .stk-dot--bad { background: var(--bad); }
+.starmap-root .stk-dot--ink { background: var(--ink); }
+.starmap-root .stk-dot--dim { background: var(--star-dim); }
+
+/* ---------- KvList ---------- */
+.starmap-root .stk-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--hairline-soft);
+}
+.starmap-root .stk-kv-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 22px;
+}
+.starmap-root .stk-kv-k {
+  flex: none;
+  /* 键列不换行：4 字标签在 44px 里会断成两行，读起来像两行数据。 */
+  min-width: 56px;
+  white-space: nowrap;
+  color: var(--dim2);
+  font-size: 11px;
+}
+.starmap-root .stk-kv-v {
+  margin: 0;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+.starmap-root .stk-kv-v.is-mono {
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+.starmap-root .stk-kv-v.is-empty { color: var(--dim2); }
+
+/* ---------- Pager ---------- */
+.starmap-root .stk-pager {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.starmap-root .stk-pager-meta {
+  font-size: 11px;
+  color: var(--dim2);
+  font-variant-numeric: tabular-nums;
+}
+.starmap-root .stk-pager-ctl {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.starmap-root .stk-pager-nums {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.starmap-root .stk-pager-nums::-webkit-scrollbar { display: none; }
+
+.starmap-root .stk-pager-num,
+.starmap-root .stk-pager-dir {
+  position: relative;
+  border: 0;
+  background: none;
+  border-radius: 5px;
+  color: var(--dim);
+  font: inherit;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: color 150ms var(--ease-out), background-color 150ms var(--ease-out);
+}
+.starmap-root .stk-pager-num {
+  min-width: 22px;
+  height: 24px;
+  padding: 0 6px;
+}
+.starmap-root .stk-pager-dir {
+  height: 24px;
+  padding: 0 6px;
+  color: var(--dim2);
+}
+.starmap-root .stk-pager-num:hover:not(:disabled),
+.starmap-root .stk-pager-dir:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+.starmap-root .stk-pager-num:disabled,
+.starmap-root .stk-pager-dir:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+/* 当前页：文字转实色 + 底部 2px 短线，不画方框 */
+.starmap-root .stk-pager-num.is-on {
+  color: var(--ink);
+  background: none;
+  cursor: default;
+}
+.starmap-root .stk-pager-num.is-on::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  bottom: 1px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--layer-l1);
+}
+.starmap-root .stk-pager-gap {
+  padding: 0 2px;
+  align-self: center;
+  color: var(--dim2);
+  font-size: 11.5px;
+}
+
+/* ---------- StarDetail ---------- */
+.starmap-root .stk-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.starmap-root .stk-detail-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.starmap-root .stk-detail-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.starmap-root .stk-detail-sub .stk-sep { color: var(--dim2); }
+
+.starmap-root .stk-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline-soft);
+}
+.starmap-root .stk-sec-title {
+  margin: 0 0 2px;
+  font-size: 11px;
+  color: var(--dim2);
+}
+
+.starmap-root .stk-detail-fold { padding-top: 8px; border-top: 1px solid var(--hairline-soft); }
+.starmap-root .stk-detail-fold > summary {
+  cursor: pointer;
+  font-size: 11.5px;
+  color: var(--dim);
+  list-style: none;
+}
+.starmap-root .stk-detail-fold > summary::-webkit-details-marker { display: none; }
+.starmap-root .stk-detail-fold > summary:hover { color: var(--ink); }
+.starmap-root .stk-detail-fold > summary::before {
+  content: '›';
+  display: inline-block;
+  width: 10px;
+  margin-right: 4px;
+  color: var(--dim2);
+  transition: transform 120ms var(--ease-out);
+}
+.starmap-root .stk-detail-fold[open] > summary::before { transform: rotate(90deg); }
+.starmap-root .stk-detail-pre {
+  margin: 8px 0 0;
+  max-height: 112px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.starmap-root .stk-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline-soft);
+}
+.starmap-root .stk-detail-empty {
+  padding: 4px 0;
+  color: var(--dim2);
+  font-size: 11.5px;
+}
+
+/* ---------- 焦点：全 kit 一套 ---------- */
+.starmap-root .stk-row-main:focus-visible,
+.starmap-root .stk-pager-num:focus-visible,
+.starmap-root .stk-pager-dir:focus-visible,
+.starmap-root .stk-detail-fold > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+/* ---------- Section ---------- */
+.starmap-root .stk-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline-soft);
+}
+.starmap-root .stk-section.is-first {
+  padding-top: 0;
+  border-top: 0;
+}
+.starmap-root .stk-section-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.starmap-root .stk-section-title {
+  font-size: 11px;
+  color: var(--dim2);
+}
+.starmap-root .stk-section-aside {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--dim2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Seg ---------- */
+.starmap-root .stk-seg {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.starmap-root .stk-seg::-webkit-scrollbar { display: none; }
+.starmap-root .stk-seg-btn {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: color 150ms var(--ease-out), background-color 150ms var(--ease-out);
+}
+.starmap-root .stk-seg.is-sm .stk-seg-btn { height: 22px; padding: 0 6px; font-size: 11px; }
+.starmap-root .stk-seg-btn:hover { color: var(--ink); background: var(--surface-2); }
+.starmap-root .stk-seg-btn.is-on { color: var(--ink); background: none; }
+.starmap-root .stk-seg-btn.is-on::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--layer-l1);
+}
+.starmap-root .stk-seg-count {
+  color: var(--dim2);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.starmap-root .stk-seg-btn.is-on .stk-seg-count { color: var(--dim); }
+
+/* ---------- Tag ---------- */
+.starmap-root .stk-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--dim);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.starmap-root .stk-tag--l0 { background: var(--surface-2); color: var(--layer-l0); }
+.starmap-root .stk-tag--l1 { background: var(--surface-2); color: var(--layer-l1); }
+.starmap-root .stk-tag--l2 { background: var(--surface-2); color: var(--layer-l2); }
+.starmap-root .stk-tag--l3 { background: var(--surface-2); color: var(--layer-l3); }
+.starmap-root .stk-tag--ok { background: var(--surface-2); color: var(--ok); }
+.starmap-root .stk-tag--warn { background: var(--surface-2); color: var(--warn); }
+.starmap-root .stk-tag--bad { background: var(--surface-2); color: var(--bad); }
+.starmap-root .stk-tag--dim { background: var(--surface-2); color: var(--star-dim); }
+.starmap-root .stk-tag--ink { background: var(--surface-2); color: var(--ink); }
+
+/* ---------- States ---------- */
+.starmap-root .stk-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 8px;
+  text-align: center;
+}
+.starmap-root .stk-empty-title { font-size: 12px; color: var(--dim); }
+.starmap-root .stk-empty-hint { font-size: 11px; color: var(--dim2); }
+.starmap-root .stk-empty-action { margin-top: 4px; }
+
+.starmap-root .stk-skeleton { display: flex; flex-direction: column; gap: 6px; padding: 4px 0; }
+.starmap-root .stk-skeleton-row {
+  height: 10px;
+  border-radius: 4px;
+  background: var(--surface-2);
+}
+.starmap-root .stk-skeleton-row:nth-child(even) { width: 72%; }
+
+.starmap-root .stk-note {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--dim2);
+}
+.starmap-root .stk-note-text { min-width: 0; }
+.starmap-root .stk-note-stamp { margin-left: auto; flex: none; font-variant-numeric: tabular-nums; }
+.starmap-root .stk-note--warn { color: var(--warn); }
+.starmap-root .stk-note--bad { color: var(--bad); }
+
+/* ---------- MetricRow ---------- */
+.starmap-root .stk-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+.starmap-root .stk-metric { display: flex; align-items: baseline; gap: 6px; }
+.starmap-root .stk-metric-k {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--dim2);
+}
+.starmap-root .stk-metric-v {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.starmap-root .stk-metric-unit {
+  margin-left: 2px;
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--dim2);
+}
+
+/* ---------- Gate ---------- */
+.starmap-root .stk-gate {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  min-height: 64px;
+  padding: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--dim);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 150ms var(--ease-out), border-color 150ms var(--ease-out);
+}
+.starmap-root .stk-gate:hover { background: var(--surface-2); border-color: var(--line); }
+.starmap-root .stk-gate.is-active { border-color: var(--line); box-shadow: inset 0 -2px 0 var(--layer-l1); }
+.starmap-root .stk-gate.is-degraded { opacity: 0.7; }
+.starmap-root .stk-gate-h { display: flex; align-items: center; gap: 6px; }
+.starmap-root .stk-gate-label { font-size: 12px; color: var(--ink); }
+.starmap-root .stk-gate-count {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.starmap-root .stk-gate-unit { margin-left: 2px; font-size: 10.5px; font-weight: 400; color: var(--dim2); }
+.starmap-root .stk-gate-hint { font-size: 10.5px; color: var(--dim2); }
+
+/* ---------- Legend ---------- */
+.starmap-root .stk-legend { display: flex; flex-direction: column; gap: 2px; }
+.starmap-root .stk-legend-items { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.starmap-root .stk-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.starmap-root .stk-legend-note { font-size: 10.5px; color: var(--dim2); }
+
+/* ---------- 按钮（kit 内不引旧 Btn） ---------- */
+.starmap-root .stk-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background-color 150ms var(--ease-out), border-color 150ms var(--ease-out);
+}
+.starmap-root .stk-btn:hover:not(:disabled) { background: var(--field-focus); }
+.starmap-root .stk-btn:disabled { opacity: 0.45; cursor: default; }
+.starmap-root .stk-btn.is-ghost { background: none; border-color: transparent; color: var(--dim); }
+.starmap-root .stk-btn.is-ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--ink); }
+.starmap-root .stk-btn.is-danger { border-color: var(--bad); color: var(--bad); background: none; }
+.starmap-root .stk-btn.is-danger:hover:not(:disabled) { background: var(--surface-2); }
+.starmap-root .stk-btn.is-sm { height: 22px; padding: 0 7px; font-size: 11px; }
+
+/* 表单行（旧 Field 转发后用到的三行） */
+.starmap-root .stk-field-label { display: flex; flex-direction: column; gap: 5px; }
+.starmap-root .stk-field-req { color: var(--bad); }
+.starmap-root .stk-field-hint { font-size: 10.5px; color: var(--dim2); }
+
+/* ---------- ScopeBar ---------- */
+.starmap-root .stk-scopebar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.starmap-root .stk-field { display: inline-flex; align-items: center; gap: 6px; }
+.starmap-root .stk-field-k { font-size: 11px; color: var(--dim2); }
+.starmap-root .stk-select {
+  height: 26px;
+  max-width: 220px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--field);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: border-color 150ms var(--ease-out);
+}
+.starmap-root .stk-select:hover:not(:disabled) { border-color: var(--line); background: var(--field-focus); }
+.starmap-root .stk-select:disabled { opacity: 0.5; cursor: default; }
+.starmap-root .stk-scopebar-stamp { font-size: 10.5px; color: var(--dim2); font-variant-numeric: tabular-nums; }
+
+/* ---------- Dialog ---------- */
+.starmap-root .stk-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--overlay);
+}
+.starmap-root .stk-dialog {
+  width: 100%;
+  max-width: min(520px, 90vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+}
+.starmap-root .stk-dialog:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.starmap-root .stk-dialog-h { display: flex; align-items: flex-start; gap: 12px; }
+.starmap-root .stk-dialog-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--ink); }
+.starmap-root .stk-dialog-desc { margin: 4px 0 0; font-size: 11.5px; color: var(--dim); }
+.starmap-root .stk-dialog-x {
+  margin-left: auto;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--dim);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 150ms var(--ease-out), background-color 150ms var(--ease-out);
+}
+.starmap-root .stk-dialog-x:hover { color: var(--ink); background: var(--surface-2); }
+.starmap-root .stk-dialog-body {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.starmap-root .stk-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline-soft);
+}
+
+.starmap-root .stk-row-main:focus-visible,
+.starmap-root .stk-pager-num:focus-visible,
+.starmap-root .stk-pager-dir:focus-visible,
+.starmap-root .stk-seg-btn:focus-visible,
+.starmap-root .stk-gate:focus-visible,
+.starmap-root .stk-btn:focus-visible,
+.starmap-root .stk-select:focus-visible,
+.starmap-root .stk-dialog-x:focus-visible,
+.starmap-root .stk-detail-fold > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* ---------- Stage（星场是背景层，UI 浮在上面） ---------- */
+.starmap-root .stk-stage {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+}
+.starmap-root .stk-stage-field {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+.starmap-root .stk-stage-ui {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 16px 20px;
+  pointer-events: none;
+}
+.starmap-root .stk-stage-top,
+.starmap-root .stk-stage-bottom,
+.starmap-root .stk-stage-left,
+.starmap-root .stk-stage-right,
+.starmap-root .stk-stage-mid > * {
+  pointer-events: auto;
+  min-width: 0;
+}
+.starmap-root .stk-stage-body {
+  display: grid;
+  grid-template-columns: 296px minmax(0, 1fr) 316px;
+  gap: 20px;
+  min-height: 0;
+}
+.starmap-root .stk-stage-left,
+.starmap-root .stk-stage-right {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  align-self: start;
+  max-height: 100%;
+}
+.starmap-root .stk-stage-mid {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.starmap-root .stk-stage-mid > * {
+  pointer-events: auto;
+}
+.starmap-root .stk-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+}
+.starmap-root .stk-scroll::-webkit-scrollbar { width: 8px; }
+.starmap-root .stk-scroll::-webkit-scrollbar-thumb {
+  background: var(--hairline);
+  border-radius: 999px;
+}
+@media (max-width: 1180px) {
+  .starmap-root .stk-stage-body { grid-template-columns: 256px minmax(0, 1fr) 276px; gap: 12px; }
+}
+
+
+/* ---------- 浮在星场上的提示条（唯一允许的“贴在星场上”的文字） ---------- */
+.starmap-root .stk-hint {
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 深操作面（P7）：只做版式，颜色一律取 token ---------- */
+.stk-stack { display: grid; gap: 10px; }
+.stk-row-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.stk-row-actions .st-input { flex: 1 1 180px; min-width: 0; }
+.stk-list { display: grid; gap: 2px; }
+.stk-fold { border-top: 1px solid var(--hair); padding-top: 8px; margin-top: 2px; display: grid; gap: 8px; }
+.stk-fold-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--dim); }
+.stk-mono { font-family: var(--mono); font-size: 11px; color: var(--dim); word-break: break-all; }
+.stk-pre {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--hair);
+  border-radius: 6px;
+  padding: 8px 10px;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.stk-snippet { font-size: 11px; line-height: 1.7; color: var(--dim); }
+.stk-hint-inline { font-size: 11px; color: var(--dim2); font-variant-numeric: tabular-nums; }
+
+
+/* 多行输入：沿用 .st-input 的边框与底色，只补高度与纵向伸缩。 */
+.stk-textarea {
+  min-height: 96px;
+  padding: 8px 10px;
+  line-height: 1.6;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+/* 站内工具条：输入与按钮同高。26 的输入配 22 的按钮，在截图里会被读成「按钮比字大一号」。 */
+.starmap-root .st-toolbar .st-input { height: 24px; }
+.starmap-root .st-toolbar .stk-btn { height: 24px; }
+
+/* 团队站辅助：标题行右侧的计数、行尾一组小工具。 */
+.stk-meta { font-size: 11.5px; color: var(--dim2); font-variant-numeric: tabular-nums; }
+.stk-row-tools { display: inline-flex; align-items: center; gap: 6px; }
+
+
+/* ── 记忆图谱（stations/MemoryGraphPanel + scene/RelGraphCanvas） ────────────
+   画布是「关系」的容器，卡片只放读数：不描边套描边，不加光晕。 */
+.stk-graph-wrap { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.stk-graph-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.stk-graph-seed { font-size: 12px; color: var(--dim); min-width: 0; }
+.stk-graph-body { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 12px; align-items: start; }
+.stk-graph-canvas {
+  position: relative; min-height: 380px; height: 100%;
+  border: 1px solid var(--hairline); border-radius: 8px; background: var(--surface-2);
+  overflow: hidden;
+}
+.stk-graph-host { width: 100%; height: 380px; }
+.stk-graph-side { align-self: start; }
+.stk-graph-title { font-size: 12.5px; font-weight: 600; color: var(--ink); margin-bottom: 6px; word-break: break-word; }
+@media (max-width: 1100px) { .stk-graph-body { grid-template-columns: minmax(0, 1fr); } }
+
+
+
+/* 关系星图的键盘焦点：画布获得焦点时给一圈焦点色，不允许浏览器默认虚线 */
+.starmap-root .stk-graph-canvas canvas:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}

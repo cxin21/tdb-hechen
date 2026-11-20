@@ -64,6 +64,9 @@ export interface SkillFileContent {
   version: number;
 }
 
+import { emitMutation } from './mutation-bus';
+import { skillWriteScopes } from './write-scopes';
+
 const SKILL_PREFIX = '/api/v1/skill';
 
 /** skill 数据面调用：注入双 Header，POST body，解析信封（code!=0 抛 ApiError）。 */
@@ -92,6 +95,10 @@ async function skillCall<T>(
       rawMessage: envelope.message || 'empty skill response',
     });
   }
+  // 写成功后广播语义作用域（与 skill-api.ts 的 v3 通道同一张表）：fork 副本、
+  // 改正文、删技能都会让技能星云的挂载关系过期，读接口返回 null 不广播。
+  const scopes = skillWriteScopes(action);
+  if (scopes) emitMutation(...scopes);
   return envelope.data;
 }
 

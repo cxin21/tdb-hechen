@@ -30,8 +30,10 @@ export function useWikiSources() {
   const { t } = useTranslation();
   const [sources, setSources] = useState<WikiDetail[]>([]);
   const [loading, setLoading] = useState(false);
-  // 默认展示 Agent 资产（fixed），避免用户误以为自己的资产在「团队资产」里
-  const [scopeTab, setScopeTab] = useState<WikiScopeTab>('fixed');
+  /* 星图完整视图从抽屉打开时默认落团队池：Agent 资产页会把未挂载的库滤成 0，
+     页签数量没出来之前用户会当成库是空的。旧壳 /legacy 仍默认 Agent 资产。 */
+  const embedded = typeof window !== "undefined" && /(?:^|[?&])full=1(?:&|$)/.test(window.location.hash);
+  const [scopeTab, setScopeTab] = useState<WikiScopeTab>(embedded ? "team" : "fixed");
   const [keyword, setKeyword] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [viewMode, setViewMode] = useState<ViewMode>('card');
@@ -106,6 +108,18 @@ export function useWikiSources() {
     }
     return sources;
   }, [sources, scopeTab, agentFilter, fixedBoundIds]);
+
+  /* 页签上要写数量。完整视图默认停在 Agent 资产时，团队池有数据也会被滤成 0，
+     不标数量用户会当成「库是空的」。 */
+  const scopeCounts = useMemo(
+    () => ({
+      team: sources.length,
+      fixed: agentFilter
+        ? sources.filter((source) => source.wiki_id && fixedBoundIds.has(source.wiki_id)).length
+        : 0,
+    }),
+    [sources, agentFilter, fixedBoundIds],
+  );
 
   // 统计只受资产范围影响，避免搜索或状态筛选让概览数据失真。
   const stats = useMemo(
@@ -190,7 +204,6 @@ export function useWikiSources() {
 
   const fetchSources = useCallback(async () => {
     if (!activeTeamId) {
-      setSources([]);
       setLoading(false);
       return;
     }
@@ -985,6 +998,7 @@ export function useWikiSources() {
     handleBatchUpload,
     // computed
     scopeSources,
+    scopeCounts,
     stats,
     filteredSources,
     typeCounts,

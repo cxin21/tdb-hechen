@@ -1,3 +1,4 @@
+import { proofSummary, unattributedRows } from '../../lib/soul-injection-summary';
 /**
  * InjectionHealthBar —— 「注入健康」只读状态条（P0-D，task-17）。
  *
@@ -23,6 +24,19 @@ import {
   fetchSoulInjectionStats,
   type SoulInjectionStatsPayload,
 } from '@/lib/api/chat-memory-soul';
+
+const BUCKET_LABEL: Record<string, string> = {
+  sectionRead: '段读',
+  noCard: '无卡',
+  noSession: '无会话',
+  emptySegment: '空段',
+  cardBound: '绑定',
+  cardBoundEmpty: '绑定空卡',
+  cardBoundFailed: '绑定失败',
+  cleared: '清卡',
+  unconfiguredCleared: '未配身份清卡',
+  other: '其他',
+};
 
 type HealthState =
   | { status: 'loading' }
@@ -58,6 +72,9 @@ function failDetailText(data: SoulInjectionStatsPayload): string {
   if (fr.timeout > 0) parts.push(`timeout ${fr.timeout}`);
   if (fr.empty > 0) parts.push(`empty ${fr.empty}`);
   if (fr.parse > 0) parts.push(`parse ${fr.parse}`);
+  if ((fr.section_install_failed ?? 0) > 0) parts.push(`section_install_failed ${fr.section_install_failed}`);
+  // 插件侧 byReason.other：四桶全 0 但有失败时，唯一能解释「失败是真的」的数字。
+  if ((data.plugin?.byReason.other ?? 0) > 0) parts.push(`other ${data.plugin?.byReason.other}`);
   // 对账口径：召回行与注入行同会话但字符数不同（不是失败计数，但同属「读进去的不一致」）。
   if (data.pairs.matched > 0 && data.pairs.charMismatch > 0) {
     parts.push(`char_mismatch ${data.pairs.charMismatch}/${data.pairs.matched}`);
@@ -126,6 +143,10 @@ export function InjectionHealthBar({
   const failTotal = data?.failReasons
     ? Object.values(data.failReasons).reduce((a, b) => a + b, 0)
     : 0;
+  // R29（r28c-a4 / r28e-a4）：真实插件行大多没有身份，租户桶恒 0，能看的
+  // 事实全在集群级 unattributed；proof 的分母要等宿主重启后插件写出 cardHash 才非 0。
+  const unattributedList = unattributedRows(data?.plugin?.unattributed);
+  const proof = proofSummary(data?.proof);
   const failDetail = data ? failDetailText(data) : '';
 
   /**
@@ -160,6 +181,46 @@ export function InjectionHealthBar({
         <span className="_soul-health-empty">{t('soul.health.empty')}</span>
       ) : null}
 
+      {/* Round26（r26e-a1）：清卡徽标不挂在 ok/degraded 分支上——「窗口里只有清卡行」时 rows=0、
+          status 就是 noData，而那正是最该说明「这些是主动不关联/身份没配上，不是注入失败」的时刻；
+          旧 Core 没有这两个键时整段不渲染（不拿 0 顶上）。 */}
+      {data &&
+      ((data.plugin?.unassociated ?? 0) > 0 || (data.plugin?.unconfigured ?? 0) > 0) ? (
+        <span className="_soul-health-meta">
+          {(data.plugin?.unassociated ?? 0) > 0
+            ? t('soul.health.unassociated', { count: data.plugin?.unassociated ?? 0 })
+            : null}
+          {(data.plugin?.unconfigured ?? 0) > 0
+            ? ` · ${t('soul.health.unconfigured', { count: data.plugin?.unconfigured ?? 0 })}`
+            : null}
+        </span>
+      ) : null}
+
+      {/* R29：集群级未归因桶 + 端到端对账。两段都在 noData 时也显示——「有清卡/未归因行但租户桶为 0」
+          正是需要解释的时刻。桶标签暂无 i18n 键（P2 债），数字口径本身来自服务端。 */}
+      {data && (unattributedList.length > 0 || proof) ? (
+        <span className="_soul-health-meta">
+          {unattributedList.length > 0
+            ? t('soul.health.unattributed', {
+                detail: unattributedList.map((r) => `${BUCKET_LABEL[r.key] ?? r.key} ${r.count}`).join(' · '),
+                defaultValue: '未归因（集群）：{{detail}}',
+              })
+            : null}
+          {proof
+            ? proof.hostPending
+              ? ` · ${t('soul.health.proofPending', {
+                  sectionRead: proof.sectionReadCount,
+                  defaultValue: '对账待宿主上报：{{sectionRead}} 条段读缺整卡 hash',
+                })}`
+              : ` · ${t('soul.health.proof', {
+                  matched: proof.matched,
+                  total: proof.sectionCardHashCount,
+                  defaultValue: '对账命中 {{matched}}/{{total}} 会话',
+                })}`
+            : null}
+        </span>
+      ) : null}
+
       {(state.status === 'ok' || state.status === 'degraded') && data ? (
         <>
           {data.lastAt ? (
@@ -181,7 +242,7 @@ export function InjectionHealthBar({
             >
               {t('soul.health.card', {
                 version: data.lastCard.version,
-                hash: data.lastCard.hash,
+                textHash: data.lastCard.textHash,
                 chars: data.lastCard.chars,
               })}
             </span>
@@ -201,6 +262,18 @@ export function InjectionHealthBar({
           ) : data.lastVolatile?.skipped ? (
             // 旧 Core 没有聚合计数：只保留「最近一次被去重跳过」这一个事实，不编造 N。
             <span className="_soul-health-skip">{t('memory.journal.skippedBadge')}</span>
+          ) : null}
+
+          {/* 旧 Core 的 plugin 里没有这两个键：缺键就不显示，不拿 0 顶上（r73-a4b 残留②）。 */}
+          {data.plugin &&
+          ((data.plugin.cardBoundEmpty !== undefined && data.plugin.cardBoundEmpty > 0) ||
+            (data.plugin.cardEmpty !== undefined && data.plugin.cardEmpty > 0)) ? (
+            <span className="_soul-health-meta">
+              {t('soul.health.zeroByte', {
+                empty: data.plugin.cardBoundEmpty ?? 0,
+                cardEmpty: data.plugin.cardEmpty ?? 0,
+              })}
+            </span>
           ) : null}
 
           {data.failReasons === null ? (

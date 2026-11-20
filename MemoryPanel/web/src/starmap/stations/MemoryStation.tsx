@@ -8,9 +8,14 @@ import { useEffect, useMemo, useState } from 'react';
 import { chatMemoryApi, type ChatMemoryLayerItem } from '@/lib/teamApi';
 import { useChatMemory } from '@/pages/ChatMemoryPage/hooks/useChatMemory';
 import { Btn, Card2, Empty, Fields, Note, Pill, Seg, Skeleton, agoText, formatTime, errorText } from '../theme/ui';
+import { Row } from '../kit';
 import { useStarmap } from '../state/StarmapProvider';
+import RecallJournalPanel from './recallJournal';
+import MemoryGraphPanel from './MemoryGraphPanel';
 
 type LayerKey = 'L0' | 'L1' | 'L2' | 'L3';
+/** 页级两档：记忆块（旧 ChatMemoryPanel）/ 回放日志（旧 RecallJournalView）。 */
+type ViewKey = 'blocks' | 'journal' | 'graph';
 
 interface EvidenceRow {
   id?: string;
@@ -24,6 +29,7 @@ interface EvidenceRow {
 export default function MemoryStation() {
   const sm = useStarmap();
   const mem = useChatMemory({ activeTeamId: sm.teamId });
+  const [view, setView] = useState<ViewKey>('blocks');
   const [layer, setLayer] = useState<LayerKey>('L1');
   const [detailId, setDetailId] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<EvidenceRow[]>([]);
@@ -31,6 +37,7 @@ export default function MemoryStation() {
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<ChatMemoryLayerItem[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
   const block = mem.selected;
   const items = useMemo(
@@ -110,6 +117,38 @@ export default function MemoryStation() {
     <div className="st-body">
       <div className="st-main">
         <div className="st-toolbar">
+          <Seg<ViewKey>
+            value={view}
+            onChange={setView}
+            options={[
+              { value: 'blocks', label: '记忆块' },
+              { value: 'journal', label: '回放日志' },
+              { value: 'graph', label: '记忆图谱' },
+            ]}
+          />
+          <span className="st-toolbar-right sm-dim2">
+            {view === 'blocks'
+              ? '分层条目 · 证据回指 · 失效标记'
+              : view === 'graph'
+                ? '以一条记忆为种子 · 邻居来自内核 l1_links 边 · 可查两点关联链'
+                : '内核每次召回的原始日志 · 召回与跳过分开计数'}
+          </span>
+        </div>
+
+        {view === 'graph' ? (
+          <MemoryGraphPanel
+            blockId={block?.id ?? ''}
+            seed={
+              layer === 'L0' || !items[0]
+                ? null
+                : { id: (detail ?? items[0]).id, label: (detail ?? items[0]).title, layer }
+            }
+          />
+        ) : view === 'journal' ? (
+          <RecallJournalPanel teamId={sm.teamId ?? ''} agentId={sm.activeAgentId ?? ''} />
+        ) : (
+        <>
+        <div className="st-toolbar">
           <Seg<LayerKey>
             value={layer}
             onChange={(v) => {
@@ -117,10 +156,10 @@ export default function MemoryStation() {
               mem.setLayer(v);
             }}
             options={[
-              { value: 'L0', label: `L0 原文 ${counts.L0 ?? ''}`.trim() },
-              { value: 'L1', label: `L1 记忆 ${counts.L1 ?? ''}`.trim() },
-              { value: 'L2', label: `L2 日目录 ${counts.L2 ?? ''}`.trim() },
-              { value: 'L3', label: `L3 结论 ${counts.L3 ?? ''}`.trim() },
+              { value: 'L0', label: `L0 对话原文 ${counts.L0 ?? ''}`.trim() },
+              { value: 'L1', label: `L1 原子记忆 ${counts.L1 ?? ''}`.trim() },
+              { value: 'L2', label: `L2 场景记忆 ${counts.L2 ?? ''}`.trim() },
+              { value: 'L3', label: `L3 核心记忆 ${counts.L3 ?? ''}`.trim() },
             ]}
           />
           <div className="st-toolbar-right">
@@ -217,38 +256,35 @@ export default function MemoryStation() {
             </div>
           </>
         )}
+        </>
+        )}
       </div>
 
       <aside className="st-side sm-scroll">
-        <Card2 title="记忆块" en="BLOCKS" right={<span className="sm-dim2">{mem.filtered.length}</span>}>
+        {err ? <Note tone="warn">{err}</Note> : null}
+        <Card2 title="记忆块" right={<span className="sm-dim2">{mem.filtered.length}</span>}>
           {mem.blocksLoading ? (
             <Skeleton rows={5} height={12} />
           ) : mem.filtered.length === 0 ? (
             <Empty text="没有记忆块" hint="先在团队里给智能体绑定或导入记忆。" />
           ) : (
-            <div className="rowlist">
+            <div className="stk-list">
               {mem.filtered.map((b) => (
-                <button
+                <Row
                   key={b.id}
-                  type="button"
-                  className={`rowitem ${b.id === mem.selectedId ? 'on' : ''}`}
+                  label={b.title}
+                  meta={`L1 ${b.layer_counts.L1} · L0 ${b.layer_counts.L0_messages}`}
+                  active={b.id === mem.selectedId}
                   onClick={() => mem.setSelectedId(b.id)}
-                >
-                  <span className="rowitem-main">
-                    <span className="rowitem-zh">{b.title}</span>
-                    <span className="sm-dim2">
-                      L1 {b.layer_counts.L1} · L0 {b.layer_counts.L0_messages}
-                    </span>
-                  </span>
-                  {b.scope ? <Pill tone={b.scope === 'private' ? 'warn' : undefined}>{b.scope === 'private' ? '私密' : '团队'}</Pill> : null}
-                </button>
+                  trailing={b.scope ? <Pill tone={b.scope === 'private' ? 'warn' : undefined}>{b.scope === 'private' ? '私密' : '团队'}</Pill> : undefined}
+                />
               ))}
             </div>
           )}
         </Card2>
 
         {block ? (
-          <Card2 title="块信息" en="BLOCK">
+          <Card2 title="块信息">
             <Fields
               items={[
                 { k: '标题', v: block.title },
@@ -258,6 +294,34 @@ export default function MemoryStation() {
               ]}
             />
             <div className="st-side-actions">
+              {/* 挂接 = 星图里「点亮这枚块」的唯一入口：分配后该块的星点与边对本 agent 变亮 */}
+              {sm.teamId && sm.activeAgentId ? (
+                <Btn
+                  small
+                  primary={block.agent_id !== sm.activeAgentId}
+                  ghost={block.agent_id === sm.activeAgentId}
+                  disabled={!!busy}
+                  onClick={async () => {
+                    if (!sm.teamId || !sm.activeAgentId) return;
+                    const assigned = block.agent_id === sm.activeAgentId;
+                    setBusy('alloc');
+                    setErr(null);
+                    try {
+                      if (assigned) await chatMemoryApi.unbind(sm.teamId, block.id, sm.activeAgentId);
+                      else await chatMemoryApi.allocate(sm.teamId, block.id, sm.activeAgentId);
+                      mem.handleRefresh();
+                    } catch (e: unknown) {
+                      setErr(errorText(e));
+                    } finally {
+                      setBusy(null);
+                    }
+                  }}
+                >
+                  {block.agent_id === sm.activeAgentId ? '从当前智能体移除' : '挂到当前智能体'}
+                </Btn>
+              ) : (
+                <span className="sm-dim2">先在上方选一个智能体，记忆块才能挂接</span>
+              )}
               <Btn
                 small
                 ghost
@@ -297,7 +361,7 @@ export default function MemoryStation() {
         ) : null}
 
         {detail ? (
-          <Card2 title="条目详情" en="ITEM">
+          <Card2 title="条目详情">
             <div className="st-detail">
               <div className="st-detail-title">{detail.title || '（无标题）'}</div>
               <div className="sm-dim2 sm-mono">{detail.id}</div>
@@ -340,7 +404,7 @@ export default function MemoryStation() {
         ) : null}
 
         {detail && layer !== 'L0' ? (
-          <Card2 title="原文证据" en="EVIDENCE" right={<span className="sm-dim2">{evidence.length}</span>}>
+          <Card2 title="原文证据" right={<span className="sm-dim2">{evidence.length}</span>}>
             {evidenceErr ? (
               <Note tone="warn">证据读取失败：{evidenceErr}</Note>
             ) : evidence.length === 0 ? (

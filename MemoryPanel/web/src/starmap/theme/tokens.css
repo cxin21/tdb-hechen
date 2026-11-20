@@ -12,6 +12,10 @@
   --hair: rgba(120, 170, 255, 0.07);
   --panel: rgba(8, 12, 22, 0.72);
   --panel-solid: #080c16;
+  /* 表单底比卡片亮一档。卡片是半透明 --panel，控件若也用 --panel，
+     两层同色叠加会变成一块死黑（侧卡里 select / datetime 就是这块黑）。 */
+  --field: rgba(28, 42, 70, 0.35);
+  --field-focus: rgba(36, 54, 90, 0.5);
   --edge: 20px;
   --hud-w: 296px;
   --hud-w-r: 316px;
@@ -31,10 +35,28 @@
   --bad: #ff7b8a;
   --font: -apple-system, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
 
+  /* ---- kit 语义层（2026-11-11 新增，旧变量保留；见 kit/DESIGN 记录） ---- */
+  --surface: #0c1220;
+  --surface-2: #121a2c;
+  --hairline: var(--line);
+  --hairline-soft: var(--hair);
+  --star-dim: #66799b;
+  --layer-l0: var(--c-l0);
+  --layer-l1: var(--c-l1);
+  --layer-l2: var(--c-l2);
+  --layer-l3: var(--c-l3);
+  --focus: rgba(127, 200, 255, 0.55);
+  --selection: rgba(127, 200, 255, 0.22);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --mono: Consolas, SFMono-Regular, ui-monospace;
+  --overlay: rgba(3, 6, 14, 0.72);
+
   position: fixed;
   inset: 0;
   display: block;
   overflow: hidden;
+  /* 让原生控件（datetime 的日历图标、下拉箭头、滚动条）跟深色底走 */
+  color-scheme: dark;
   background: var(--bg);
   color: var(--ink);
   font-family: var(--font);
@@ -67,7 +89,7 @@
   font-family: inherit;
   font-size: 11.5px;
   color: var(--ink);
-  background: rgba(6, 10, 20, 0.72);
+  background: var(--field);
   border: 1px solid var(--line);
   border-radius: 7px;
   padding: 6px 9px;
@@ -82,9 +104,9 @@
 .starmap-root input:focus,
 .starmap-root textarea:focus,
 .starmap-root select:focus {
-  border-color: rgba(127, 200, 255, 0.55);
-  box-shadow: 0 0 0 3px rgba(127, 200, 255, 0.09);
-  background: rgba(8, 14, 26, 0.9);
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  background: var(--field-focus);
 }
 .starmap-root textarea {
   resize: vertical;
@@ -107,83 +129,10 @@
 }
 
 /* ---------- 卡片外壳 ---------- */
-.card2 {
-  position: relative;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  backdrop-filter: blur(13px) saturate(1.1);
-  -webkit-backdrop-filter: blur(13px) saturate(1.1);
-  padding: 11px 12px;
-  overflow: hidden;
-}
-.card2::before {
-  content: '';
-  position: absolute;
-  inset: 4px;
-  border: 1px solid var(--hair);
-  border-radius: 7px;
-  pointer-events: none;
-}
-.card2::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 34px;
-  height: 34px;
-  background: linear-gradient(135deg, rgba(140, 195, 255, 0.14), transparent 68%);
-  pointer-events: none;
-}
-.card2 > * {
-  position: relative;
-  z-index: 1;
-}
-
-.ch {
-  display: flex;
-  align-items: baseline;
-  gap: 7px;
-  margin-bottom: 9px;
-}
-.ch-zh {
-  font-size: 11.5px;
-  letter-spacing: 0.04em;
-  color: var(--ink);
-}
-.ch-en {
-  font-size: 8.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.18em;
-  color: var(--dim2);
-}
-.ch-right {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 9.5px;
-  color: var(--dim2);
-  letter-spacing: 0.06em;
-}
-.live-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--ok);
-  box-shadow: 0 0 6px var(--ok);
-  animation: sm-blink 2.4s ease-in-out infinite;
-}
-@keyframes sm-blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.28; }
-}
 
 /* ---------- 文字 ---------- */
 .sm-label {
-  font-size: 9px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  font-size: 11px;
   color: var(--dim2);
 }
 .sm-dim { color: var(--dim); }
@@ -202,120 +151,15 @@
 .sm-body { font-size: 11.5px; color: var(--dim); line-height: 1.7; }
 
 /* ---------- 指标 ---------- */
-.stat-row {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 1px;
-  background: var(--hair);
-  border-radius: 7px;
-  overflow: hidden;
-}
-.stat-cell {
-  background: rgba(8, 12, 22, 0.5);
-  padding: 7px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.stat-cell b {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-}
-.stat-cell span {
-  font-size: 8.5px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--dim2);
-}
 
 /* ---------- 按钮 ---------- */
-.sm-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 26px;
-  padding: 0 10px;
-  border-radius: 7px;
-  border: 1px solid var(--line);
-  background: rgba(12, 19, 33, 0.7);
-  font-size: 11px;
-  color: var(--ink);
-  letter-spacing: 0.02em;
-  transition: background 0.18s, border-color 0.18s, transform 0.12s, opacity 0.18s;
-  white-space: nowrap;
-}
-.sm-btn:hover:not(:disabled) {
-  background: rgba(24, 38, 62, 0.86);
-  border-color: rgba(127, 200, 255, 0.38);
-}
-.sm-btn:active:not(:disabled) { transform: scale(0.98); }
-.sm-btn:disabled { opacity: 0.42; cursor: not-allowed; }
-.sm-btn.primary {
-  background: linear-gradient(180deg, rgba(52, 118, 208, 0.9), rgba(28, 78, 150, 0.92));
-  border-color: rgba(127, 200, 255, 0.5);
-  color: #eaf4ff;
-  box-shadow: 0 0 14px rgba(64, 140, 240, 0.22);
-}
-.sm-btn.primary:hover:not(:disabled) {
-  background: linear-gradient(180deg, rgba(64, 136, 232, 0.95), rgba(34, 90, 170, 0.95));
-}
-.sm-btn.danger { color: var(--bad); border-color: rgba(255, 123, 138, 0.34); }
-.sm-btn.danger:hover:not(:disabled) { background: rgba(70, 20, 28, 0.55); }
-.sm-btn.ghost { background: transparent; border-color: transparent; color: var(--dim); }
-.sm-btn.ghost:hover:not(:disabled) { background: rgba(255, 255, 255, 0.05); color: var(--ink); }
-.sm-btn.sm { height: 22px; padding: 0 8px; font-size: 10px; }
 
 /* ---------- 药丸/标签 ---------- */
-.pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 18px;
-  padding: 0 7px;
-  border-radius: 9px;
-  font-size: 9.5px;
-  letter-spacing: 0.04em;
-  border: 1px solid var(--line);
-  color: var(--dim);
-  background: rgba(10, 16, 28, 0.6);
-  white-space: nowrap;
-}
-.pill.on { color: var(--ink); border-color: rgba(127, 200, 255, 0.5); background: rgba(30, 62, 104, 0.5); }
-.pill.ok { color: var(--ok); border-color: rgba(110, 231, 168, 0.34); }
-.pill.warn { color: var(--warn); border-color: rgba(255, 190, 92, 0.34); }
-.pill.bad { color: var(--bad); border-color: rgba(255, 123, 138, 0.34); }
 
 /* ---------- 列表 ---------- */
 .rowlist { display: flex; flex-direction: column; gap: 1px; }
-.rowitem {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 8px;
-  border-radius: 7px;
-  cursor: pointer;
-  transition: background 0.16s, box-shadow 0.16s;
-  min-width: 0;
-}
-.rowitem:hover { background: rgba(120, 170, 255, 0.06); }
-.rowitem.on {
-  background: rgba(60, 120, 200, 0.16);
-  box-shadow: inset 2px 0 0 rgba(127, 200, 255, 0.85);
-}
-.rowitem .t { font-size: 11.5px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rowitem .s { font-size: 9.5px; color: var(--dim2); }
-.rowitem .r { margin-left: auto; font-size: 9.5px; color: var(--dim2); font-variant-numeric: tabular-nums; }
 
 /* ---------- 表格式字段 ---------- */
-.fields { display: grid; grid-template-columns: 76px 1fr; gap: 4px 10px; font-size: 11px; }
-.fields dt { color: var(--dim2); letter-spacing: 0.04em; }
-.fields dd { color: var(--dim); margin: 0; overflow-wrap: anywhere; }
-
-/* ---------- 进度条 ---------- */
-.pbar { height: 3px; border-radius: 2px; background: rgba(120, 170, 255, 0.12); overflow: hidden; }
-.pbar > i { display: block; height: 100%; border-radius: 2px; background: linear-gradient(90deg, rgba(127, 200, 255, 0.5), rgba(127, 200, 255, 0.95)); }
 
 /* ---------- 滚动 ---------- */
 .sm-scroll { overflow: auto; scrollbar-width: thin; }
@@ -325,12 +169,6 @@
 .starmap-root ::-webkit-scrollbar-thumb:hover { background: rgba(120, 170, 255, 0.3); }
 
 /* ---------- 骨架 ---------- */
-.sk {
-  background: linear-gradient(90deg, rgba(120, 170, 255, 0.06), rgba(120, 170, 255, 0.13), rgba(120, 170, 255, 0.06));
-  background-size: 200% 100%;
-  animation: sm-sk 1.6s linear infinite;
-  border-radius: 4px;
-}
 @keyframes sm-sk { 0% { background-position: 120% 0; } 100% { background-position: -80% 0; } }
 
 /* ---------- 星门层（overlay） ---------- */
@@ -350,12 +188,11 @@
   width: min(1180px, 100%);
   display: flex;
   flex-direction: column;
-  background: rgba(6, 10, 19, 0.9);
+  /* 实底，不用毛玻璃：面板后面还有星场，半透明会让星点在字上爬（DESIGN.md 布局段） */
+  background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 14px;
-  backdrop-filter: blur(18px) saturate(1.15);
-  -webkit-backdrop-filter: blur(18px) saturate(1.15);
-  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(160, 200, 255, 0.06);
+  box-shadow: 0 0 0 1px var(--hair);
   overflow: hidden;
   animation: sm-rise 0.28s cubic-bezier(0.2, 0.8, 0.3, 1);
 }
@@ -384,45 +221,8 @@
 }
 
 /* ---------- 对话框（星门内部） ---------- */
-.dlg-veil {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  background: rgba(2, 5, 11, 0.66);
-  backdrop-filter: blur(4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-.dlg {
-  width: min(520px, 100%);
-  max-height: 86vh;
-  overflow: auto;
-  background: rgba(9, 14, 25, 0.96);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6);
-  padding: 16px;
-}
 
 /* ---------- 提示条 ---------- */
-.sm-note {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  padding: 8px 10px;
-  border-radius: 8px;
-  font-size: 10.5px;
-  line-height: 1.6;
-  border: 1px solid var(--hair);
-  background: rgba(120, 170, 255, 0.05);
-  color: var(--dim);
-}
-.sm-note.bad { border-color: rgba(255, 123, 138, 0.28); background: rgba(255, 123, 138, 0.07); color: #ffc2c9; }
-.sm-note.warn { border-color: rgba(255, 190, 92, 0.28); background: rgba(255, 190, 92, 0.07); color: #ffe0ae; }
-.sm-note.ok { border-color: rgba(110, 231, 168, 0.26); background: rgba(110, 231, 168, 0.06); color: #b8f2d2; }
-
 /* ---------- 星门内部通用 ---------- */
 .st-body { display: flex; flex: 1; min-height: 0; width: 100%; }
 .st-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -444,19 +244,6 @@
 }
 .st-scroll { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px; }
 .st-pane { padding: 12px; overflow: auto; flex: 1; min-height: 0; }
-.st-empty {
-  height: 100%;
-  min-height: 140px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: var(--dim2);
-  font-size: 11px;
-  text-align: center;
-  padding: 24px;
-}
 
 @media (max-width: 900px) {
   .starmap-root { --hud-w: 0px; --hud-w-r: 0px; --card-w: 100%; --edge: 12px; }
@@ -465,7 +252,13 @@
 }
 
 /* ============ 单页布局：顶栏 / 左右 HUD / 抽屉 ============ */
-.st-bg { position: fixed; inset: 0; z-index: 0; }
+/* 画布只占两条 HUD 之间的空档：星点不会被固定侧栏压住点不到。
+   左右栏本身是 position: fixed，不受这里的影响。 */
+.st-bg {
+  position: fixed; top: 62px; bottom: 18px; z-index: 0; overflow: hidden;
+  left: calc(var(--hud-w) + var(--edge) * 2);
+  right: calc(var(--hud-w-r) + var(--edge) * 2);
+}
 .st-bg canvas { display: block; width: 100%; height: 100%; }
 
 .st-top {
@@ -478,32 +271,85 @@
 .st-brand { display: flex; align-items: center; gap: 10px; }
 .st-brand-dot {
   width: 9px; height: 9px; border-radius: 50%;
-  background: var(--c-l1); box-shadow: 0 0 12px var(--c-l1);
-  animation: sm-blink 2.6s var(--ease, ease-in-out) infinite;
+  background: var(--c-l1);
 }
-.st-brand-zh { font-size: 13px; letter-spacing: .16em; color: var(--ink); }
-.st-brand-en { font-size: 8.5px; letter-spacing: .26em; color: var(--dim2); margin-top: 2px; }
+.st-brand-zh { font-size: 13px; font-weight: 600; color: var(--ink); }
 
 .st-top-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .st-select { display: flex; align-items: center; gap: 6px; }
-.st-select-label { font-size: 9px; letter-spacing: .18em; color: var(--dim2); text-transform: uppercase; }
+.st-select-label { font-size: 11px; color: var(--dim2); }
 .st-select select {
   height: 26px; padding: 0 22px 0 9px;
-  background: var(--panel); color: var(--ink);
+  background: var(--field); color: var(--ink);
   border: 1px solid var(--hair); border-radius: 8px;
   font-size: 11.5px; outline: none; cursor: pointer;
-  backdrop-filter: blur(10px); max-width: 190px;
+  max-width: 190px;
 }
 .st-select select:hover { border-color: var(--line); }
 
 .st-left, .st-right {
   position: fixed; top: 62px; bottom: 18px; z-index: 5;
   width: var(--hud-w); display: flex; flex-direction: column; gap: 10px;
-  overflow-y: auto; scrollbar-width: none;
+  overflow-y: auto; scrollbar-width: thin;
 }
 .st-left { left: var(--edge); }
 .st-right { right: var(--edge); width: var(--hud-w-r); }
-.st-left::-webkit-scrollbar, .st-right::-webkit-scrollbar { width: 0; }
+.st-left::-webkit-scrollbar, .st-right::-webkit-scrollbar, .fb-sel::-webkit-scrollbar { width: 8px; }
+.st-left::-webkit-scrollbar-thumb, .st-right::-webkit-scrollbar-thumb, .fb-sel::-webkit-scrollbar-thumb {
+  background: rgba(160, 180, 220, 0.35); border-radius: 8px;
+}
+
+/* 进入某一朵云：星场垫在最底层铺满，筛选/详情以 Stage 浮层挂在上面。 */
+.cloud-field { position: absolute; inset: 0; }
+.cloud-top {
+  display: flex; align-items: center; gap: 10px; min-height: 28px;
+}
+.cloud-top-name { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+.cloud-top-meta { font-size: 11.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.cloud-top .stk-btn { margin-left: auto; height: 24px; }
+.cloud-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+/* 原生 datetime-local 的日历按钮在深底上默认是白块，压掉它的底色 */
+
+/* 忆云：层按钮（全部 | L0 L1 L2 L3）与日期参照框 */
+.st-layer-btn { display: inline-flex; align-items: center; gap: 5px; }
+.st-layer-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; }
+.st-layer-dot.k-L0 { background: var(--c-l0); }
+.st-layer-dot.k-L1 { background: var(--c-l1); }
+.st-layer-dot.k-L2 { background: var(--c-l2); }
+.st-layer-dot.k-L3 { background: var(--c-l3); }
+.st-layer-n { font-style: normal; font-size: 9px; opacity: 0.66; font-variant-numeric: tabular-nums; }
+/* 层按钮现在写「L0 对话原文」这种全名，窄栏里允许换行，不再挤成一条 */
+.st-layer-btn { max-width: 100%; }
+.st-layer-btn.is-empty { border-color: rgba(255,183,90,0.42); }
+.st-layer-warn { margin-top: 6px; font-size: 11px; line-height: 1.5; color: #ffb86b; }
+.st-date-row { display: flex; align-items: center; gap: 6px; }
+.st-date-row input { flex: 1 1 0; min-width: 0; }
+.st-date-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
+
+/* 标准分页条：共 N 条 · 第 x / y 页 + 上一页 [页码窗口] 下一页 */
+.st-pager { margin-top: 10px; border-top: 1px solid var(--hair); padding-top: 8px; }
+.st-pager-meta { font-size: 10.5px; color: var(--dim2); letter-spacing: 0.04em; }
+.st-pager-meta b { color: var(--ink); font-weight: 600; }
+.st-pager-btns { display: flex; flex-wrap: nowrap; align-items: center; gap: 4px; margin-top: 6px; }
+/* 页码自己一块、可横向滚，绝不让「下一页」被挤到第二行 */
+.st-pager-nums { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; justify-content: center; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+.st-pager-nums::-webkit-scrollbar { display: none; }
+.st-pager-num {
+  min-width: 24px;
+  height: 22px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.st-pager-num:hover:not(:disabled) { color: var(--ink); background: var(--field-focus); }
+.st-pager-num.on { color: var(--ink); border-color: rgba(140, 190, 255, 0.45); background: var(--field-focus); }
+.st-pager-num:disabled { opacity: 0.45; cursor: not-allowed; }
+.st-pager-gap { color: var(--dim2); font-size: 10px; padding: 0 2px; }
 
 /* 观测对象 */
 .st-obj { margin-bottom: 12px; }
@@ -516,6 +362,8 @@
 .st-stat-dot { width: 6px; height: 6px; border-radius: 50%; }
 .st-stat-label { font-size: 11.5px; color: var(--dim); flex: 1; }
 .st-stat-value { font-size: 12.5px; color: var(--ink); font-variant-numeric: tabular-nums; }
+/* 左栏「星云构成」：6px 色点取画布星色；四带缩进挂在记忆行下面，不另开一张卡 */
+.st-cloud-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; }
 .st-stat-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; border-top: 1px solid var(--hair); padding-top: 8px; }
 
 /* 星点详情 */
@@ -523,7 +371,7 @@
 .st-hint-zh { font-size: 12.5px; color: var(--ink); margin-bottom: 4px; }
 .st-node-head { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
 .st-node-dot { width: 7px; height: 7px; border-radius: 50%; }
-.st-node-kind { font-size: 9px; letter-spacing: .18em; color: var(--dim2); text-transform: uppercase; }
+.st-node-kind { font-size: 11px; color: var(--dim2); }
 .st-node-title { font-size: 12.5px; line-height: 1.65; color: var(--ink); margin-bottom: 6px; word-break: break-word; }
 .st-node-actions { display: flex; gap: 8px; margin-top: 10px; }
 
@@ -534,9 +382,9 @@
 .st-legend-lines { display: flex; gap: 12px; margin-top: 10px; font-size: 10px; color: var(--dim2); }
 .st-legend-lines span { display: inline-flex; align-items: center; gap: 5px; }
 .st-legend-lines i { width: 14px; height: 1px; background: var(--dim); }
-.st-legend-lines i.l-session { background: rgba(127, 200, 255, .85); height: 2px; }
-.st-legend-lines i.l-person { background: rgba(255, 143, 199, .8); }
-.st-legend-lines i.l-ref { background: rgba(159, 230, 200, .7); }
+.st-legend-lines i.l-session { background: #4ec9d9; height: 2px; }
+.st-legend-lines i.l-person { background: #f08fa8; }
+.st-legend-lines i.l-ref { background: #6fd39a; }
 .st-legend-tip { margin-top: 10px; line-height: 1.7; }
 
 /* ============ 站台内容 ============ */
@@ -610,7 +458,7 @@
 .st-trait { display: flex; align-items: center; gap: 10px; }
 .st-trait-label { width: 66px; font-size: 11.5px; color: var(--ink); flex: 0 0 66px; }
 .st-trait-bar { flex: 1; height: 4px; border-radius: 99px; background: rgba(127, 200, 255, .12); overflow: hidden; }
-.st-trait-bar i { display: block; height: 100%; background: linear-gradient(90deg, rgba(127,200,255,.55), var(--c-l1)); border-radius: 99px; }
+.st-trait-bar i { display: block; height: 100%; background: var(--c-l1); border-radius: 99px; }
 .st-trait-num { font-size: 10.5px; color: var(--dim2); font-variant-numeric: tabular-nums; width: 92px; text-align: right; }
 
 /* 情绪 */
@@ -638,11 +486,6 @@
 .st-version-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 10.5px; }
 .st-version-detail { font-size: 10px; color: var(--dim2); margin-top: 2px; word-break: break-word; }
 .st-person-name { font-size: 13px; color: var(--ink); margin-bottom: 3px; }
-.st-field { margin-top: 10px; }
-.st-field-head { display: flex; align-items: center; gap: 8px; }
-.st-field-label { font-size: 10px; letter-spacing: .16em; color: var(--dim2); text-transform: uppercase; }
-.st-field-text { font-size: 11.5px; line-height: 1.8; color: var(--ink); margin-top: 3px; }
-.st-field-evidence { font-size: 10.5px; line-height: 1.75; color: var(--dim2); margin-top: 4px; border-left: 2px solid var(--hair); padding-left: 8px; }
 .st-relations { margin-top: 14px; border-top: 1px solid var(--hair); padding-top: 10px; }
 .st-relation { margin-top: 8px; font-size: 11.5px; color: var(--ink); }
 .st-relation-quote { font-size: 10.5px; line-height: 1.7; color: var(--dim2); margin-top: 3px; }
@@ -652,7 +495,6 @@
 .st-field-row { display: flex; align-items: center; gap: 10px; }
 .st-field-row > span { width: 66px; font-size: 11px; color: var(--dim2); flex: 0 0 66px; }
 .st-field-row .st-input { flex: 1; }
-.st-embed { border-radius: 11px; overflow: hidden; }
 .st-listing { margin-top: 10px; }
 
 @media (max-width: 900px) {
@@ -665,7 +507,7 @@
 .st-cardintro { font-size: 11px; line-height: 1.7; color: var(--dim2); white-space: pre-wrap; }
 .st-cardsec { display: flex; flex-direction: column; gap: 6px; }
 .st-cardsec-title {
-  font-size: 11px; letter-spacing: .18em; text-transform: none; color: var(--dim);
+  font-size: 11px; color: var(--dim);
   padding-bottom: 5px; border-bottom: 1px solid var(--hair);
 }
 .st-cardp { margin: 0; font-size: 12.5px; line-height: 1.9; color: var(--ink); }
@@ -675,3 +517,152 @@
   width: 4px; height: 4px; border-radius: 50%; background: var(--c-l1); opacity: .7;
 }
 
+
+/* ── 五体星图（P0）：人格恒星 + 四云 ───────────────────────── */
+
+.five-bodies { position: absolute; inset: 0; display: block; }
+.fb-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.fb-status {
+  position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%);
+  padding: 6px 12px; border-radius: 999px; font-size: 12px;
+  background: rgba(10, 14, 24, 0.68); color: var(--fg-dim, #9aa7bd);
+  border: 1px solid rgba(255, 255, 255, 0.08); pointer-events: none;
+}
+.fb-status-warn { color: #ffd479; }
+.fb-status-err { color: #ff8f8f; }
+.fb-refresh {
+  position: absolute; right: 18px; bottom: 18px;
+  padding: 5px 10px; border-radius: 8px; font-size: 12px; cursor: pointer;
+  background: rgba(10, 14, 24, 0.6); color: var(--fg-dim, #9aa7bd);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.fb-refresh:hover { color: var(--fg, #e8eefc); border-color: rgba(255, 255, 255, 0.2); }
+
+.fb-canvas { cursor: grab; touch-action: none; }
+.fb-hint {
+  position: absolute; left: 18px; bottom: 16px; font-size: 11px;
+  color: rgba(150,170,200,.72); letter-spacing: .04em; pointer-events: none;
+}
+.fb-focus {
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px; font-size: 12px;
+  color: #dfe9ff; background: rgba(8,12,22,.72); border: 1px solid rgba(120,160,220,.28);
+  border-radius: 999px; padding: 6px 10px 6px 14px;
+}
+.fb-focus span { font-weight: 600; letter-spacing: .04em; }
+.fb-focus button {
+  font-size: 11px; color: #cfe0ff; background: rgba(80,120,200,.22);
+  border: 1px solid rgba(120,160,220,.32); border-radius: 999px; padding: 3px 10px; cursor: pointer;
+}
+.fb-focus button:hover { background: rgba(100,140,220,.32); }
+/* 星点详情卡：点一颗星后浮在画布右下 */
+.five-bodies .fb-sel {
+  position: relative;
+  width: 100%;
+  max-height: 46vh;
+  overflow-y: auto;
+  z-index: 1;
+  padding: 12px 14px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.five-bodies .fb-sel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  margin-bottom: 6px;
+}
+.five-bodies .fb-sel-head button {
+  border: 0;
+  background: transparent;
+  color: #b9aee6;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.five-bodies .fb-sel-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: #b8b2d6;
+}
+.five-bodies .fb-sel-row b { color: #f1ecff; font-weight: 500; }
+.five-bodies .fb-sel-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.five-bodies .fb-sel-actions button {
+  flex: 1;
+  padding: 5px 0;
+  border-radius: 8px;
+  border: 1px solid rgba(190, 170, 255, 0.34);
+  background: rgba(120, 100, 200, 0.18);
+  color: #efeaff;
+  font-size: 11px;
+  cursor: pointer;
+}
+.five-bodies .fb-sel-actions button:hover { background: rgba(140, 118, 224, 0.3); }
+
+/* 忆云四带小标题：左 HUD「星体构成」里区分内外顺序 */
+.starmap-root .st-band-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 2px 0 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--hair);
+  font-size: 11px;
+  letter-spacing: 0.10em;
+  color: var(--dim);
+}
+.starmap-root .st-band-head span:last-child { font-size: 10px; color: var(--dim2); }
+
+/* 星点卡片：关联星点清单 */
+.five-bodies .fb-sel-near { margin-top: 8px; border-top: 1px solid rgba(140,170,220,0.14); padding-top: 8px; }
+.five-bodies .fb-sel-near-head { font-size: 11px; letter-spacing: 0.08em; color: rgba(210,224,246,0.55); margin-bottom: 6px; }
+.five-bodies .fb-sel-near-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 6px; border: 0; border-radius: 6px; background: rgba(120,160,230,0.06); color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.five-bodies .fb-sel-near-row:hover { background: rgba(120,160,230,0.16); }
+.five-bodies .fb-sel-near-rel { flex: 0 0 54px; font-size: 11px; color: #7fc8ff; opacity: 0.85; }
+.five-bodies .fb-sel-near-tag { flex: 1 1 auto; font-size: 12px; color: rgba(232,240,255,0.92); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.five-bodies .fb-sel-near-deg { flex: 0 0 auto; font-size: 11px; color: rgba(210,224,246,0.5); font-variant-numeric: tabular-nums; }
+
+/* 星点卡里的星点编号：同文档多颗星时，切星也要看得出换了哪一颗 */
+.five-bodies .fb-sel-pos { margin-top: 6px; font: 500 11px/1.4 var(--sm-mono, monospace); color: rgba(255,255,255,.42); letter-spacing: .04em; }
+
+/* 顶栏里的登录身份与登出：新壳不能像旧壳那样只有下拉，最少要能看见是谁、能退出 */
+.starmap-root .st-user {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.62);
+  letter-spacing: 0.02em;
+}
+
+
+.st-right .rowlist, .fb-sel-near { max-height: 240px; overflow-y: auto; }
+.cloud-side { pointer-events: auto; }
+
+/* 星点卡槽位：和右栏其它卡同宽同列，不再各自 fixed 定位 */
+.st-slot { display: flex; flex-direction: column; gap: 10px; }
+.st-slot:empty { display: none; }
+.st-card-stack { position: absolute; left: 18px; bottom: 54px; width: 300px; max-height: 46vh; overflow-y: auto; z-index: 6; }
+.fb-sel { display: flex; flex-direction: column; gap: 6px; }
+/* 场景记忆 / 核心记忆的整篇正文：卡内滚动，不把侧栏顶爆 */
+.st-node-full {
+  margin: 8px 0 0; padding: 10px 12px; max-height: 320px; overflow: auto;
+  white-space: pre-wrap; word-break: break-word; font-size: 11.5px; line-height: 1.65;
+  font-family: inherit; border: 1px solid var(--line); border-radius: 10px;
+  background: rgba(12, 18, 32, 0.45); color: var(--fg-dim, #c8d4ea);
+  scrollbar-width: thin;
+}
+.fb-sel-near { max-height: 200px; overflow-y: auto; }

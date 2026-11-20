@@ -8,7 +8,7 @@
  * 数据零新端点（与 BlockDetail 内嵌图谱同源）：
  *   - 块列表 = team-assets ∪ 自有 agent 的 agent-fixed（与 ChatMemoryPanel 的 fixed 口径一致，
  *     不新增块级查询参数）；
- *   - 图数据 = layer(blockId, 'L1', 200, 0) → mapLayerItem，节点/边由 MemoryGraphView 自取。
+ *   - 图数据 = layer(blockId, 'L1', 100, 0) 再补一页 → mapLayerItem，节点/边由 MemoryGraphView 自取。
  * 空态/加载/失败各有文案（看不到=没做，也不假装"暂无数据"）。
  */
 import { useEffect, useMemo, useState } from 'react';
@@ -23,7 +23,7 @@ import { MemoryGraphView } from './MemoryGraphView';
 import '../styles/chat-memory-panel.css';
 
 /** 图内节点上限（MemoryGraphView 侧再 slice(0,60) 控布局成本，此处只决定请求页大小） */
-const L1_PAGE_SIZE = 200;
+const L1_PAGE_SIZE = 100; // BFF 校验 limit <= 100，超过直接 400
 
 export default function MemoryGraphTab() {
   const { t } = useTranslation();
@@ -103,8 +103,14 @@ export default function MemoryGraphTab() {
     setFailed(false);
     chatMemoryApi
       .layer(blockId, 'L1', L1_PAGE_SIZE, 0)
-      .then((d) => {
-        if (alive) setItems((d.items ?? []).map(mapLayerItem));
+      .then(async (d) => {
+        const first = d.items ?? [];
+        const total = d.total ?? first.length;
+        if (total > first.length) {
+          const more = await chatMemoryApi.layer(blockId, 'L1', L1_PAGE_SIZE, first.length);
+          first.push(...(more.items ?? []));
+        }
+        if (alive) setItems(first.slice(0, 200).map(mapLayerItem));
       })
       .catch(() => {
         if (alive) setFailed(true);

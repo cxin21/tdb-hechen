@@ -1,0 +1,10 @@
+html,body{margin:0;height:100%;background:#06070b;overflow:hidden;}
+#c{position:fixed;inset:0;display:block;}
+#hud{position:fixed;left:18px;top:16px;font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  color:#7f8ca8;white-space:pre-line;letter-spacing:.01em;pointer-events:none;}
+#hud i{font-style:normal;color:#c8d2e6;}
+#bar{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);display:flex;gap:6px;}
+#bar button{font:12px/1 ui-monospace,Menlo,Consolas,monospace;color:#8b98b4;background:transparent;
+  border:1px solid #232a3a;border-radius:999px;padding:7px 13px;cursor:pointer;}
+#bar button[on]{border-color:#3a4459;}
+#bar button:hover{color:#dce3f2;}

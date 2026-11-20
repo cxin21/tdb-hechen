@@ -95,8 +95,8 @@ export default function Starfield(props: Props) {
     let paused = false;
     let hoverId: string | null = null;
     let stationHit: string | null = null;
-    let dust = makeDust(DUST, 20261110);
-    let arms = makeArms(ARM_ARM, ARM_PER, 90210);
+    const dust = makeDust(DUST, 20261110);
+    const arms = makeArms(ARM_ARM, ARM_PER, 90210);
     let bg: HTMLCanvasElement | null = null;
     let nodePos: Vec3[] = [];
     let lastNodeKey = '';

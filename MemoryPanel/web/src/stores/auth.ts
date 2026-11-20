@@ -96,5 +96,11 @@ onUnauthorized(() => {
   clearBackendCache();
   writeActiveTeamId(null);
   clearAuth();
+  /* 被动登出要留原因，否则用户只看到登录页凭空出现 */
+  try {
+    window.localStorage.setItem('tdai-panel.auth-notice', '会话已失效（接口返回 401），请重新登录。');
+  } catch {
+    /* ignore */
+  }
   useAuthStore.setState({ auth: undefined });
 });

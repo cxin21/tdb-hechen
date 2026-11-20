@@ -9,14 +9,13 @@
  *   4. 前端把 { instance_id, user_key, user } 缓存到 localStorage（见 lib/panelSession.ts），
  *      之后每个 meta 请求都从这里读出注入双 Header
  *
- * 设计：单列居中的明亮极简风格 —— 全屏点阵波纹动效背景（ParticleWaveBackground，
- * 纯 Canvas 零依赖，视觉参考 React Bits 的 Particles / DotGrid）+ 居中毛玻璃卡片，
- * 卡片内为「选实例 + 输入 user_key」表单。
+ * 视觉：这里就是同一片星场（LoginStarfield，星尘只由画布尺寸决定，不含任何数据），
+ * 中间一张**实底**卡片放表单。不用毛玻璃、不用全大写小标签、不用 tea-component 的默认外观
+ * —— 与 DESIGN.md 的禁令同一套（旧版文件头写着「毛玻璃卡片」，已按新规重画）。
  */
 
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Select, Input, Button, Alert } from 'tea-component';
 import {
   authVerifyApi,
   metaInstancesApi,
@@ -24,7 +23,9 @@ import {
   type PublicUser,
 } from '@/lib/teamApi';
 import { getPanelSession, setPanelSession, clearPanelSession } from '@/lib/panelSession';
-import ParticleWaveBackground from './ParticleWaveBackground';
+import { Note, Surface } from '../starmap/kit';
+import '../starmap/theme/tokens.css';
+import LoginStarfield from './LoginStarfield';
 import './login-gate.css';
 
 export interface AuthState {
@@ -93,6 +94,20 @@ export default function LoginGate({ onLoggedIn }: { onLoggedIn: (auth: AuthState
   const [userKey, setUserKey] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /* 被动登出（401）留下的一次性提示 */
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const n = window.localStorage.getItem('tdai-panel.auth-notice');
+      if (n) {
+        window.localStorage.removeItem('tdai-panel.auth-notice');
+        setNotice(n);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
   const [instancesError, setInstancesError] = useState(false);
 
   useEffect(() => {
@@ -118,7 +133,7 @@ export default function LoginGate({ onLoggedIn }: { onLoggedIn: (auth: AuthState
         setInstancesError(true);
         setError(
           t('login.error.loadInstances', {
-            detail: err instanceof Error ? ` (${err.message})` : '',
+            detail: err instanceof Error ? ' (' + err.message + ')' : '',
           }),
         );
       });
@@ -163,95 +178,76 @@ export default function LoginGate({ onLoggedIn }: { onLoggedIn: (auth: AuthState
     }
   }
 
-  function onKeyDown(e: React.KeyboardEvent) {
-    if (e.key === 'Enter' && !submitting) void submit();
-  }
-
   return (
-    <div className="_tdai-login">
-      {/* 明亮点阵波纹动效背景（纯 Canvas，零外部依赖） */}
-      <div className="_tdai-login-bg" aria-hidden="true">
-        <ParticleWaveBackground
-          className="_tdai-login-bg-canvas"
-          gap={22}
-          dotRadius={1.6}
-          speed={1}
-        />
+    <div className="starmap-root login-root">
+      <div className="login-field" aria-hidden="true">
+        <LoginStarfield className="login-field-canvas" />
       </div>
 
-      {/* 居中内容区 */}
-      <main className="_tdai-login-main">
-        <div className="_tdai-login-card">
-          <img src="/logo.png" alt="Memory Hub" className="_tdai-login-logo" />
+      <main className="login-main">
+        <Surface className="login-card">
+          <h1 className="login-title">{t('login.welcome')}</h1>
+          <p className="login-tagline">{t('login.tagline')}</p>
 
-          <h1 className="_tdai-login-title">{t('login.welcome')}</h1>
-          <p className="_tdai-login-subtitle">{t('login.tagline')}</p>
+          <form onSubmit={submit} className="login-form">
+            <label className="login-field-label" htmlFor="tdai-login-instance">
+              {t('login.field.instance')}
+            </label>
+            <select
+              id="tdai-login-instance"
+              className="stk-select login-select"
+              value={instanceId}
+              onChange={(e) => {
+                setInstanceId(e.target.value);
+                setError(null);
+              }}
+              disabled={submitting || instances.length === 0}
+              aria-label={t('login.field.instance')}
+            >
+              {instances.length === 0 ? (
+                <option value="">
+                  {instancesError ? t('login.placeholder.instanceError') : t('login.placeholder.instance')}
+                </option>
+              ) : null}
+              {instances.map((inst) => (
+                <option key={inst.instance_id} value={inst.instance_id}>
+                  {inst.name}
+                </option>
+              ))}
+            </select>
 
-          <form onSubmit={submit} className="_tdai-login-form">
-            {/* 记忆实例选择 — GET /api/v1/meta/instances */}
-            <div className="_tdai-login-field">
-              <label className="_tdai-login-label" htmlFor="tdai-login-instance">
-                {t('login.field.instance')}
-              </label>
-              <Select
-                appearance="button"
-                size="full"
-                value={instanceId}
-                onChange={(value) => {
-                  setInstanceId(value);
-                  setError(null);
-                }}
-                disabled={submitting || instances.length === 0}
-                placeholder={
-                  instancesError
-                    ? t('login.placeholder.instanceError')
-                    : t('login.placeholder.instance')
-                }
-                options={instances.map((inst) => ({ value: inst.instance_id, text: inst.name }))}
-                boxSizeSync
-              />
-            </div>
+            <label className="login-field-label" htmlFor="tdai-login-key">
+              {t('login.field.userKey')}
+            </label>
+            <input
+              id="tdai-login-key"
+              className="st-input login-input"
+              type="password"
+              value={userKey}
+              onChange={(e) => {
+                setUserKey(e.target.value);
+                setError(null);
+              }}
+              placeholder={t('login.placeholder.userKey')}
+              autoComplete="current-password"
+              disabled={submitting}
+            />
+            <p className="login-hint">{t('login.hint.userKey')}</p>
 
-            {/* user_key（sk-mem-…），经 auth/verify 验活后写入前端会话 */}
-            <div className="_tdai-login-field">
-              <label className="_tdai-login-label" htmlFor="tdai-login-key">
-                {t('login.field.userKey')}
-              </label>
-              <Input.Password
-                size="full"
-                value={userKey}
-                onChange={(value) => {
-                  setUserKey(value);
-                  setError(null);
-                }}
-                onKeyDown={onKeyDown}
-                placeholder={t('login.placeholder.userKey')}
-                autoComplete="current-password"
-                disabled={submitting}
-                rules={false}
-              />
-              <p className="_tdai-login-hint">{t('login.hint.userKey')}</p>
-            </div>
+            {notice && !error ? <Note tone="warn">{notice}</Note> : null}
+            {error ? <Note tone="bad">{error}</Note> : null}
 
-            {error && (
-              <div className="_tdai-login-alert">
-                <Alert type="error">{error}</Alert>
-              </div>
-            )}
-
-            <Button
-              type="primary"
-              htmlType="submit"
-              className="_tdai-login-submit"
-              loading={submitting}
+            <button
+              type="submit"
+              className="stk-btn login-submit"
               disabled={submitting || !userKey.trim() || !instanceId}
             >
               {submitting ? t('login.submitting') : t('login.submit')}
-            </Button>
+            </button>
           </form>
-        </div>
+        </Surface>
 
-        <p className="_tdai-login-footer">{t('login.footer')}</p>
+        <p className="login-foot">{t('login.footer')}</p>
       </main>
     </div>
   );

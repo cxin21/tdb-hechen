@@ -2,6 +2,8 @@
  * api/chat-memory.ts — Chat Memory 面板专用业务路由（/api/v1/chat-memory/*）。
  */
 import { getPanelSession } from '../panelSession';
+import { emitMutation } from './mutation-bus';
+import { chatMemoryWriteScopes } from './write-scopes';
 import { request, ApiError } from './base';
 import type { MetaEnvelope } from './types';
 
@@ -171,6 +173,8 @@ async function chatMemoryCall<T>(endpoint: string, body: Record<string, unknown>
       data: (envelope.data ?? undefined) as unknown,
     });
   }
+  const scopes = chatMemoryWriteScopes(endpoint);
+  if (scopes) emitMutation(...scopes);
   return envelope.data as T;
 }
 

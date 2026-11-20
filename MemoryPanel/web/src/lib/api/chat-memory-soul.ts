@@ -265,7 +265,8 @@ export interface SoulInjectionStatsWindow {
 
 export interface SoulInjectionLastCard {
   version: number;
-  hash: string;
+  /** sha256(卡正文) —— 与服务端 /v3/soul/card 的 material hash 不是同一口径 */
+  textHash: string;
   chars: number;
 }
 
@@ -281,6 +282,8 @@ export interface SoulInjectionFailReasons {
   timeout: number;
   empty: number;
   parse: number;
+  /** 人格两段没能注册进系统提示词（Round11 起单列；旧 BFF 不返回该键时按 0 读） */
+  section_install_failed?: number;
 }
 
 export interface SoulInjectionStatsPayload {
@@ -298,6 +301,42 @@ export interface SoulInjectionStatsPayload {
   serverRenderOnly: number;
   /** 召回行 ↔ 注入行按会话对账结果（matched 为可比会话数） */
   pairs: { matched: number; charMismatch: number };
+  /** Round28：端到端证明（段行 cardHash vs 绑定行 card.hash）；旧 BFF/Core 缺此段。 */
+  proof?: { sectionReadCount: number; textHashMatched: number; sessionsWithProof: number; sectionCardHashCount: number };
+  /** Round28：默认排除 *-test/*-key；这里是被排除的行数（显式 includeTest 时仍照报）。 */
+  excluded?: { testRows: number };
+  /**
+   * 插件侧分组计数（可选）：byReason = 有身份的失败按原因分桶；unattributed = 没有身份、
+   * 不能摊给任何租户的集群级桶。旧 BFF 不返回该字段时整段不存在（按「无数据」处理）。
+   */
+  plugin?: {
+    rows: number;
+    cardBound: number;
+    cardBoundEmpty: number;
+    /** Round20：插件报的 card-empty（已并入 cardBoundEmpty，这里单列）。 */
+    cardEmpty?: number;
+    /** Round20：带身份但不进 rows 的非计账事件行。 */
+    otherRows?: number;
+  /** Round26：用户主动「本次不关联」的清卡行（card-cleared）。 */
+  unassociated?: number;
+  /** Round26（r26e-a1）：身份没配上的清卡——与「用户拒绝」分开，旧 Core 无此键。 */
+  unconfigured?: number;
+    cardBoundFailed: number;
+    noIdentityRows: number;
+    sectionRead: number;
+    sectionReadNoCard: number;
+    sectionReadEmptySegment: number;
+    sectionReadNoSession: number;
+    byReason: { http_status: number; timeout: number; empty: number; parse: number; other: number };
+    /** Round25：集群口径的绑定/失败（可选——旧 BFF/Core 不返回这些键）。 */
+    unattributed: {
+      sectionRead: number; noCard: number; emptySegment: number; noSession: number;
+      cardBound?: number; cardBoundEmpty?: number; cardBoundFailed?: number;
+      byReason?: { http_status: number; timeout: number; empty: number; parse: number; other: number };
+      lastFailureAt?: string | null;
+      cleared?: number; unconfiguredCleared?: number; other?: number;
+    };
+  };
   /** journal 关掉/目录不存在：服务端给 200 全零 + 这个标记 */
   note?: 'journal_disabled';
   /**
@@ -316,6 +355,8 @@ export interface SoulInjectionStatsQuery {
   agentId?: string;
   /** 1..8760，缺省 24（BFF 会原样校验，非法给 400 BAD_HOURS） */
   hours?: number;
+  /** 显式捞回 *-test/*-key 身份的行（默认排除；BFF 透传 includeTest=1） */
+  includeTest?: boolean;
 }
 
 /**
@@ -334,6 +375,7 @@ export async function fetchSoulInjectionStats(
   if (query.userId) params.set('user', query.userId);
   if (query.agentId) params.set('agent', query.agentId);
   if (query.hours !== undefined) params.set('hours', String(query.hours));
+  if (query.includeTest === true) params.set('includeTest', '1');
   const envelope = await request<MetaEnvelope<SoulInjectionStatsPayload>>(
     'GET',
     SOUL_INJECTION_STATS_PATH + '?' + params.toString(),
@@ -494,7 +536,10 @@ export interface SoulProfileField {
   stale: boolean;
 }
 
-/** 详情页关系行：in 方向时 objName 是本人名字，对方名按 counterpartKey 从列表反查。 */
+/**
+ * 详情页关系行。counterpartName 是 core 直接给的对方名字（两个方向都有，已按 key 解析）；
+ * 老 core 没有这个字段时，才退回「按 counterpartKey 从人物列表反查」。
+ */
 export interface SoulProfileRelation {
   relId: string;
   pred: string;
@@ -502,6 +547,7 @@ export interface SoulProfileRelation {
   objName: string | null;
   direction: 'out' | 'in' | 'mutual';
   counterpartKey: string | null;
+  counterpartName?: string | null;
   quote: string;
   recordId: string;
   validFrom: string | null;

@@ -147,6 +147,7 @@ export default function WikiSourcesPanel() {
     openDetail,
     handleUnbindWiki,
     // computed
+    scopeCounts,
     stats,
     filteredSources,
     runningWikiIds,
@@ -278,7 +279,7 @@ export default function WikiSourcesPanel() {
             onChange={(value) => setScopeTab(value as WikiScopeTab)}
             options={(['team', 'fixed'] as WikiScopeTab[]).map((tab) => ({
               value: tab,
-              text: t(SCOPE_LABEL_KEYS[tab]),
+              text: t(SCOPE_LABEL_KEYS[tab]) + ' ' + (tab === 'team' ? scopeCounts.team : tab === 'fixed' ? scopeCounts.fixed : 0),
             }))}
           />
         }
