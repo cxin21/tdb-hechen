@@ -1032,7 +1032,11 @@ export class MemoryClient {
         return { ok: false, reason: `timed out after ${timeout}ms` };
       }
       this.deps.log?.debug?.(`agemem: ${path} request failed`, error);
-      const detail = error instanceof Error ? error.message : String(error);
+      // R33-8：undici 只给 'fetch failed'，真正原因（ECONNREFUSED / UND_ERR_CONNECT_TIMEOUT / ENOTFOUND …）在 error.cause；
+      // 不带 cause，线上只能看到「传输失败」，分不清「Core 没起来」「端口不通」「握手超时」。
+      const cause = (error as { cause?: { code?: unknown; message?: unknown } } | undefined)?.cause;
+      const causeText = cause === undefined ? '' : ` [${String(cause.code ?? cause.message ?? 'unknown')}]`;
+      const detail = (error instanceof Error ? error.message : String(error)) + causeText;
       return { ok: false, reason: 'transport failure: ' + detail };
     } finally {
       clearTimeout(timer);

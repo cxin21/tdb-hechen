@@ -2006,6 +2006,13 @@ merge 脚本另加 fail-closed：`l1_archive` 主键是 `record_id` 且原用 `I
 - 测试：`dsh-plugin/test/session-identity.test.ts` 47 passed（含 11 个新用例；第 3 条路径的用例『an empty inherited branch whose parent is stuck on a transport skip probes once and recovers』断言 `calls === 1`、未弹窗、`source: "recovered"`）；全量 `npm test` **50 files / 867 tests passed**。变异「`if (parent.source === 'skipped' && isEmptyTriple(parent))` → `if (false && …)`」→ 1 failed，还原通过。
 - 生效条件：**宿主重启**（插件产物要重新加载）。历史 176 条 inherited 空三元组的分支不会回填——它们的父会话若不是「传输层跳过」，按规则就不该被替它绑定。
 
+重启后实测（2026-11-20 10:52，Core 已 healthy）：
+
+- `session-identity.json` 仍 **200 条 = inherited/空 174 + skipped/空 18 + picked/绑定 3 + user-declined/空 5**，**`recovered` 0 条**。skipped 的原因分布：transport failure 4 / timed out 5 / `user chose 否` 6 / ASK_CANCELLED 1 / empty answer 2。
+- 自愈路径确实跑过：重启后新写的两条 skipped（`session-89dd8661` at `1795143300332` = 2026-11-20T02:55:00.332Z、本会话 `session-9b404d96` at `1795143304160` = 02:55:04.160Z）的 `at` 被推新，但 `reason` 原样保留 `candidates failed: transport failure: fetch failed` → **探针本身仍以传输失败告终**。
+- 后果：注入日志 `D:/TDB/data/logs/persona-injection.jsonl`（路径解析在 `dsh-plugin/src/injection-log.ts:164-171`，`TDB_PERSONA_LOG` 优先，否则 `$TDB_DATA_DIR/logs/persona-injection.jsonl`）706 行 = section-read 602 / bind-probe 85 / card-bound 4 / card-cleared 15，**带 `cardHash` 的 0 行**；`/v3/soul/injection/stats` 的 `proof` 仍 `{sectionReadCount:9, textHashMatched:0, sectionCardHashCount:0, sessionsWithProof:0}`。
+- 已知边界：失败详情只有 undici 的 `fetch failed`，无法区分 ECONNREFUSED / 连接超时 / DNS；Core 侧同时刻 `/health` 200、shell `curl` 与 stats 均正常，所以怀疑在插件请求层（见 R33-8 的两处加固）。**在拿到 `error.cause` 的真实读数前，P0-2 只能算「自愈已实现、尚未观测到成功」。**
+
 ### 5.51.6 数据面清理：孤儿向量 64 行、悬挂边 175 条（P1-3/P1-4）
 
 - 脚本：`MemoryCore/scripts/prune-orphan-vectors.mjs`（默认 dry-run；`--apply` 前 `VACUUM INTO` 备份；用 `sqlite-vec` 的 `getLoadablePath()` 加载 `vec0.dll`（v0.1.7-alpha.2）删 vec0 行；`detectVecKeyMode()` 处理「带 `record_id TEXT PRIMARY KEY` 的 vec0 不暴露 rowid」；审计 JSON 里分开记 `shadowRowsRemovedByVec0` 与 `shadowRowsDeletedExplicitly`）与 `MemoryCore/scripts/prune-dangling-links.mjs`（`isAlive = l1_records ∪ l1_archive`；`profile:v1:` 命名空间只有显式 `--include-profile-source` 才动；按 rowid 精确删边 + 审计）。
@@ -2023,6 +2030,7 @@ merge 脚本另加 fail-closed：`l1_archive` 主键是 `record_id` 且原用 `I
 | R33-4 | `card-v13.ts` 2480/400/230/slice(0,3) + 4 测试 | 改回 2400/300/180/slice(0,2) |
 | R33-5 | `session-identity.ts` 三条自愈路径 + `recovered` + 11 测试 | 删 `reconcileExisting`/`healSkipped`/`healBranch` 与其调用 |
 | R33-6 | 两个 prune 脚本（新增文件）+ 生产数据清理（有备份/审计） | 用 `D:/TDB/data/backups/` 下的备份覆盖 |
+| R33-7 | `start-tdb-supervised.ps1` 内 clamp `if ($MaxRestarts -lt 10) { $MaxRestarts = 10 }`（运行环境，不进 git） | 删该行；注意 `D:/TDB/etc/RESTART-SOP.md:17` 规定预算是调用方传参（DSH bundle 传 3），脚本默认值不足以覆盖 |
 
 ### 5.51.8 仍未闭环（如实）
 
@@ -2031,6 +2039,8 @@ merge 脚本另加 fail-closed：`l1_archive` 主键是 `record_id` 且原用 `I
 3. **P2-10**：41 矩阵 8 条未验证（A4/B5/B6/B8/B9/B10/B12/E2）。B 组缺 fixture（承诺三态、断联人、标签生长语料），E2 的 `valid_to` 语义是产品决策（当前失效靠 `state=degraded`，`planLifecycle` 不写 `valid_to`）。
 4. **identity 默认绑定**：产品决策（用户 2026-11-19 明确选择「按需绑定」），本节的三条自愈只在「曾经尝试过、被传输层挡掉」的场景补位，不改变默认。
 5. **历史快照不可复算**：v1221 及更早的取卡正文没有留档，`?audit=1` 只对之后的取卡有效。
+6. **P0-2 自愈尚未观测到成功**：重启后 `recovered` 0 条，探针回报 `transport failure: fetch failed`；R33-8 已把 `error.cause` 带进 reason、并把自愈探针超时抬到 10s，但这两处**要再重启一次宿主**才进进程。在此之前不要写「身份自愈已生效」。
+7. **supervisor 预算仍被调用方压到 3**：`GET :8446/status` 显示 `restartsUsed 0 / maxRestarts 3`（supervisorPid 46640，由宿主拉起）；R33-7 的 clamp 只在脚本内生效，宿主重启后才会重新读。
 
 ## 6. 排查清单
 

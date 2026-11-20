@@ -9,6 +9,13 @@ import { resolveUserSessionInitDecision, type UserInitDecision } from './user-se
 const CANDIDATES_RETRY_DELAY_MS = 700;
 
 /**
+ * 自愈探针的超时（R33-8）：会话启动时用 4s（不能拖慢第一屏），但自愈发生在会话
+ * 已经跑起来之后，Core 可能正在冷启动尾部或跑 backfill，4s 会把「慢」记成
+ * 「transport failure」并再压 2 分钟。自愈给 10s，仍然有界。
+ */
+const HEAL_PROBE_TIMEOUT_MS = 10_000;
+
+/**
  * P0-2：陈旧「跳过」的重试门槛。
  *
  * 2026-11-19 现场：Core 重启窗口里那一次 candidates 拉取以
@@ -800,7 +807,7 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     const userKey = await deps.resolveUserKey();
     // Headless composition: no key to list teams with, so no probe at all.
     if (userKey === undefined) return;
-    const first = await candidatesWithOneRetry({ userKey, timeoutMs: deps.timeoutMs });
+    const first = await candidatesWithOneRetry({ userKey, timeoutMs: HEAL_PROBE_TIMEOUT_MS });
     const resolved = first.kind === 'ok' ? await unambiguousTriple(first, userKey) : undefined;
     if (resolved === undefined) {
       deps.store.set(sessionId, { ...existing, at: now() });
@@ -822,7 +829,7 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
   const healBranch = async (sessionId: string, existing: SessionBinding): Promise<void> => {
     const userKey = await deps.resolveUserKey();
     if (userKey === undefined) return;
-    const first = await candidatesWithOneRetry({ userKey, timeoutMs: deps.timeoutMs });
+    const first = await candidatesWithOneRetry({ userKey, timeoutMs: HEAL_PROBE_TIMEOUT_MS });
     const resolved = first.kind === 'ok' ? await unambiguousTriple(first, userKey) : undefined;
     if (resolved === undefined) {
       deps.store.set(sessionId, { ...existing, at: now() });
