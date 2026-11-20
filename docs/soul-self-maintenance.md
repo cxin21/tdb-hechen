@@ -2013,6 +2013,14 @@ merge 脚本另加 fail-closed：`l1_archive` 主键是 `record_id` 且原用 `I
 - 后果：注入日志 `D:/TDB/data/logs/persona-injection.jsonl`（路径解析在 `dsh-plugin/src/injection-log.ts:164-171`，`TDB_PERSONA_LOG` 优先，否则 `$TDB_DATA_DIR/logs/persona-injection.jsonl`）706 行 = section-read 602 / bind-probe 85 / card-bound 4 / card-cleared 15，**带 `cardHash` 的 0 行**；`/v3/soul/injection/stats` 的 `proof` 仍 `{sectionReadCount:9, textHashMatched:0, sectionCardHashCount:0, sessionsWithProof:0}`。
 - 已知边界：失败详情只有 undici 的 `fetch failed`，无法区分 ECONNREFUSED / 连接超时 / DNS；Core 侧同时刻 `/health` 200、shell `curl` 与 stats 均正常，所以怀疑在插件请求层（见 R33-8 的两处加固）。**在拿到 `error.cause` 的真实读数前，P0-2 只能算「自愈已实现、尚未观测到成功」。**
 
+11:16–11:21 的定位（结论：不是插件、不是端口、不是代理）：
+
+- Node 侧（undici `fetch` 与原生 `http.get`）打 `127.0.0.1:8420/health` 连续超时 5–8s，同一段时间 `curl` 三次都是 200、用时 0.11–0.35s；Node 打 `8421`（knowledge）与 `60109`（DSH Web）立刻 200/401 → 只有 8420 这一个端口对 Node 挂住。
+- 排除法：裸 socket 发最小 `GET /health HTTP/1.1` 正常拿到 200；UA 矩阵（`undefined` / `node` / `undici` / `curl/8.4.0` / `tdai-agemem/1.0` / `Mozilla/5.0`）先全失败、后全成功；环境里没有 `HTTP_PROXY`/`NO_PROXY`，`NODE_USE_ENV_PROXY` 未设；`netstat` 只有 Core（pid 26636）在 8420 LISTENING → 不是 UA、不是代理、不是 IPv6/DNS、不是端口写错。
+- 到 11:20:50 之后同一套探测全部 0.00–0.03s 返回，期间 Core 日志里有 pipeline 任务在 11:19:59 收尾、进程 CPU 334s / WS 861MB → **失败窗口就是 Core 冷启动后的回填饱和期（事件循环被长任务占住，超过 4–8s 才应答）**，插件的 `fetch failed` 是客户端超时，不是连接被拒。
+- 对插件的含义：自愈探针 4s 一定踩在这个窗口里，这就是 `recovered` 恒 0 的直接原因；R33-8 的 10s + 一次 700ms 重试是对症的缓解，但饱和超过 10s 时仍会失败——所以真正的判据是「下一轮是否出现 `recovered`」，而不是自愈代码是否存在。
+- 新增观测面（R33-10）：重试失败时把**这一次**的探测结论写进记录的 `lastHealProbe` / `lastHealAt`（历史 `reason` 仍按原语义保留，不被改写），这样以后不必再靠猜。
+
 ### 5.51.6 数据面清理：孤儿向量 64 行、悬挂边 175 条（P1-3/P1-4）
 
 - 脚本：`MemoryCore/scripts/prune-orphan-vectors.mjs`（默认 dry-run；`--apply` 前 `VACUUM INTO` 备份；用 `sqlite-vec` 的 `getLoadablePath()` 加载 `vec0.dll`（v0.1.7-alpha.2）删 vec0 行；`detectVecKeyMode()` 处理「带 `record_id TEXT PRIMARY KEY` 的 vec0 不暴露 rowid」；审计 JSON 里分开记 `shadowRowsRemovedByVec0` 与 `shadowRowsDeletedExplicitly`）与 `MemoryCore/scripts/prune-dangling-links.mjs`（`isAlive = l1_records ∪ l1_archive`；`profile:v1:` 命名空间只有显式 `--include-profile-source` 才动；按 rowid 精确删边 + 审计）。
@@ -2031,6 +2039,8 @@ merge 脚本另加 fail-closed：`l1_archive` 主键是 `record_id` 且原用 `I
 | R33-5 | `session-identity.ts` 三条自愈路径 + `recovered` + 11 测试 | 删 `reconcileExisting`/`healSkipped`/`healBranch` 与其调用 |
 | R33-6 | 两个 prune 脚本（新增文件）+ 生产数据清理（有备份/审计） | 用 `D:/TDB/data/backups/` 下的备份覆盖 |
 | R33-7 | `start-tdb-supervised.ps1` 内 clamp `if ($MaxRestarts -lt 10) { $MaxRestarts = 10 }`（运行环境，不进 git） | 删该行；注意 `D:/TDB/etc/RESTART-SOP.md:17` 规定预算是调用方传参（DSH bundle 传 3），脚本默认值不足以覆盖 |
+| R33-9 | `memory-client.ts` GET 面的 catch 也带 `error.cause`（verifyUserKey/listTeams/listAgents 走这条，之前只有 POST 面带） | 删该段 cause 拼接，恢复单行 detail |
+| R33-10 | `session-identity.ts` 增 `lastHealAt`/`lastHealProbe`（type + load 透传 + 两条自愈失败分支写入） | 删两个字段与三处写入 |
 
 ### 5.51.8 仍未闭环（如实）
 
@@ -2039,8 +2049,8 @@ merge 脚本另加 fail-closed：`l1_archive` 主键是 `record_id` 且原用 `I
 3. **P2-10**：41 矩阵 8 条未验证（A4/B5/B6/B8/B9/B10/B12/E2）。B 组缺 fixture（承诺三态、断联人、标签生长语料），E2 的 `valid_to` 语义是产品决策（当前失效靠 `state=degraded`，`planLifecycle` 不写 `valid_to`）。
 4. **identity 默认绑定**：产品决策（用户 2026-11-19 明确选择「按需绑定」），本节的三条自愈只在「曾经尝试过、被传输层挡掉」的场景补位，不改变默认。
 5. **历史快照不可复算**：v1221 及更早的取卡正文没有留档，`?audit=1` 只对之后的取卡有效。
-6. **P0-2 自愈尚未观测到成功**：重启后 `recovered` 0 条，探针回报 `transport failure: fetch failed`；R33-8 已把 `error.cause` 带进 reason、并把自愈探针超时抬到 10s，但这两处**要再重启一次宿主**才进进程。在此之前不要写「身份自愈已生效」。
-7. **supervisor 预算仍被调用方压到 3**：`GET :8446/status` 显示 `restartsUsed 0 / maxRestarts 3`（supervisorPid 46640，由宿主拉起）；R33-7 的 clamp 只在脚本内生效，宿主重启后才会重新读。
+6. **P0-2 自愈仍未观测到成功**：重启后 `recovered` 0 条，但**传输层已排除**——Core 日志 `D:/TDB/data/logs/tdai-core-20261120-110734.out.log.tee.log` 计到 36 次 `/v3/meta/auth/verify`，并在 11:22:32 连续出现 `/v3/meta/team/list`、`/v3/meta/agent/list user=usr-2m7b1144d9` 的 200 响应（`success:true`，`v3-meta-router.ts`），说明自愈探针走到了第三段。剩下两种可能：①`unambiguousTriple()` 因账号下多 team/多 agent 返回 undefined —— 宿主配置只有 `userKeyRef: "TDAI_USER_KEY"`（`C:/Users/Administrator/.dsh/profiles/desktop/cordis.patch.yml:215`），没有 base `teamId`/`agentId` 可收敛；②运行中的宿主仍挂旧模块，`recovered` 分支没跑到。两者靠 `lastHealProbe`（R33-10）区分，**需要一次宿主重启**。若确认是歧义，两条路：在 profile 里写死 base `teamId`/`agentId`（产品决策，不擅自改），或让自愈收敛到「本机历史上唯一 pick 过的三元组」（本轮未做）。身份库当刻 200 条 = inherited 173 / skipped 19 / picked 3 / user-declined 5，历史绑定过的三元组只有一个：`team-2k12lgb650|usr-2m7b1144d9|agt-2m7buribzz`（3 条 picked）。
+7. **supervisor 预算**：R33-7 的 clamp 已在 `D:/TDB/etc/start-tdb-supervised.ps1` 生效；当刻 `GET :8446/status` 读到 `restartsUsed 0 / maxRestarts 10`（supervisorPid 20460、hostPid 33916、startedAt 2026-11-20T11:07:34.673+08，三服务 healthy）。注意 `D:/TDB/etc` 不在 git 仓库内，属本机配置，换机要重做。
 
 ## 6. 排查清单
 

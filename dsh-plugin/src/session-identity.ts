@@ -189,6 +189,13 @@ export interface SessionBinding {
    * 都留空（多人同场时归到谁身上都是猜 —— 与 Core 侧 human 行的裁决同一口径）。
    */
   personKey?: string;
+  /**
+   * P0-2 观测面：最近一次自愈探测（healSkipped / healBranch）的时间与**这一次**的
+   * 失败原因。原来的 reason 是建记录时那一次失败，被刻意保留（重试失败不该改写历史
+   * 结论），于是线上永远看不到「现在到底为什么还不行」。成功绑定后随新记录一起消失。
+   */
+  lastHealAt?: number;
+  lastHealProbe?: string;
   /** Epoch ms. */
   at: number;
 }
@@ -325,6 +332,8 @@ export class SessionIdentityStore {
           ...(typeof binding.taskId === 'string' && binding.taskId !== '' ? { taskId: binding.taskId } : {}),
           source: binding.source ?? 'picked',
           reason: typeof binding.reason === 'string' ? binding.reason : undefined,
+          ...(typeof (binding as { lastHealAt?: unknown }).lastHealAt === 'number' ? { lastHealAt: binding.lastHealAt } : {}),
+          ...(typeof (binding as { lastHealProbe?: unknown }).lastHealProbe === 'string' ? { lastHealProbe: binding.lastHealProbe } : {}),
           at: typeof binding.at === 'number' && Number.isFinite(binding.at) ? binding.at : 0,
         });
       }
@@ -810,11 +819,9 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     const first = await candidatesWithOneRetry({ userKey, timeoutMs: HEAL_PROBE_TIMEOUT_MS });
     const resolved = first.kind === 'ok' ? await unambiguousTriple(first, userKey) : undefined;
     if (resolved === undefined) {
-      deps.store.set(sessionId, { ...existing, at: now() });
-      debug(
-        'agemem: identity skip not healed yet',
-        first.kind === 'ok' ? 'candidates are ambiguous' : first.reason,
-      );
+      const probe = first.kind === 'ok' ? 'candidates are ambiguous' : first.reason;
+      deps.store.set(sessionId, { ...existing, at: now(), lastHealAt: now(), lastHealProbe: probe });
+      debug('agemem: identity skip not healed yet', probe);
       return;
     }
     // reason 不带：绑定态就该没有失败原因。
@@ -832,8 +839,9 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     const first = await candidatesWithOneRetry({ userKey, timeoutMs: HEAL_PROBE_TIMEOUT_MS });
     const resolved = first.kind === 'ok' ? await unambiguousTriple(first, userKey) : undefined;
     if (resolved === undefined) {
-      deps.store.set(sessionId, { ...existing, at: now() });
-      debug('agemem: inherited branch not healed yet', first.kind === 'ok' ? 'candidates are ambiguous' : first.reason);
+      const probe = first.kind === 'ok' ? 'candidates are ambiguous' : first.reason;
+      deps.store.set(sessionId, { ...existing, at: now(), lastHealAt: now(), lastHealProbe: probe });
+      debug('agemem: inherited branch not healed yet', probe);
       return;
     }
     submit(sessionId, { ...resolved, source: 'recovered', at: now() });

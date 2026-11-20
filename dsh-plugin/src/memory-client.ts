@@ -1157,7 +1157,11 @@ export class MemoryClient {
       return { ok: true, data: envelope.data as T };
     } catch (error) {
       this.deps.log?.debug?.(`agemem: ${path} request failed`, error);
-      const detail = error instanceof Error ? error.message : String(error);
+      // R33-9：GET 面（verifyUserKey / listTeams / listAgents 走这条）同样要带 cause，
+      // 否则身份自愈只会留下 'fetch failed'，分不清拒绝连接 / 超时 / DNS。
+      const cause = (error as { cause?: { code?: unknown; message?: unknown } } | undefined)?.cause;
+      const causeText = cause === undefined ? '' : ` [${String(cause.code ?? cause.message ?? 'unknown')}]`;
+      const detail = (error instanceof Error ? error.message : String(error)) + causeText;
       return { ok: false, reason: 'transport failure: ' + detail };
     } finally {
       clearTimeout(timer);
