@@ -1956,6 +1956,82 @@ merge 脚本另加 fail-closed：`l1_archive` 主键是 `record_id` 且原用 `I
 注：§5.49 的 v1223/5177 是 14:33Z 时点读数；15:14Z 线上已渲染 v1224（快照 5181、chars 1362、同 4 条 warnings），本节不重复刷新。
 
 `labels.defaultExcludesDormant` / `labels.includeDormant`（`counts.dormant=0`）、`stats.failReasons.buckets`（窗口内无失败上报）、`stats.failReasons.recount`（同因，两侧都是 0；两项各一条）、`stats.proof.shape`（无绑定身份会话，段读无卡、无 cardHash）、`snapshot.provenanceEvidence`（没有超过 5 个出处的条目）。共 6 条，与 §5.49 的「46 通过 / 0 失败 / 6 待部署」一致。
+## 5.51 Round33：P0/P1/P2 收口（健康门、卡正文与快照、标签坏票、卡容量、身份自愈、数据面清理）
+
+本节是 Round32 交接里 P0/P1/P2 清单的落地记录。每条都写了「改了什么 / 凭什么改 / 怎么验证 / 怎么回滚」，没做到的部分在 5.51.8 如实列着。
+
+### 5.51.1 冷启动 182s vs supervisor 90s 健康门（P1-5）
+
+- 现场：`D:/TDB/data/logs/tdai-core-20261119-215431.out.log.tee.log` 里 `Lifecycle scheduler (H+I) started` 在 21:57:22，`Gateway listening` 在 **22:00:24.448+08**，中间 182s 全部在 `MemoryCore/src/gateway/server.ts:2374` 之后的 `startIntegratedServices()`（embed-backfill 定时器 `server.ts:2376-2402` + `buildValenceLlmRunner()`/`listNullValenceTenantTriplets()` 顺序 derive 链 `server.ts:2413-2454`），期间不监听端口。
+- supervisor 的 `90s` 门短于冷启动，于是每次重启都记 `[FAIL] tdai-core not healthy on 8420 after 90s`、`[fake-dead] … recorded, NOT killed`，并把 `restartsUsed` 一直推到上限（现场 `D:/TDB/data/run/tdb-supervisor.state.json` 记 `{max:3, used:6}`——预算耗尽后核心再挂**不会**自动重启）。
+- 改动：`D:/TDB/etc/start-tdb-supervised.ps1` 的 `[int]$HealthTimeoutSeconds = 90` → **240**（含注释说明 182s 实测）。`-MaxRestarts` 的脚本默认值已是 10。
+- 生效条件：**必须重启 supervisor**。它是 `start-tdb-supervised.ps1` 启动的常驻进程，改脚本不会热加载；且当前实例是带 `-MaxRestarts 3` 启动的，state 里的 `max` 不会自己变。
+- 回滚：把 240 改回 90。
+- 实测（2026-11-20T10:17:56+08）：先停旧 supervisor（pid 17684，带 `-MaxRestarts 3`）——按脚本契约「supervisor 自己死掉时服务继续跑」，Core 24804 全程 `/health` 200 无中断；再以 `-ParentPid 8572 -MaxRestarts 10` 启新的 pid **47252**，它把三个服务全部 `origin: adopted` 接管，`restartsUsed 0 / max 10`。随后 `POST /restart {"service":"tdai-core"}` → Core 10:18:21 起重、**10:21:22 健康**（约 181s，落在 240s 门内），事件日志无 `[start] failed`，只有 watchdog 在启动前段打的 `fake-dead … not killing`（无害：它不杀进程，健康后自动 `adopt … health recovered`）。
+
+### 5.51.2 卡正文 ≠ 快照正文：`?audit=1`（P1-7）
+
+- 根因：`GET /v3/soul/card` 走 `assembleSoulCard({persist:false})`（`MemoryCore/src/gateway/soul-card-endpoint.ts:253`），「GET 无副作用」是文档契约（`MemoryCore/src/core/soul/card-service.ts:39-40`）。快照只在 tick 末落账，而卡正文含**随时钟衰减的心境行**（`card-v13.ts:835-852` 的「比基线偏沉，松紧和平时差不多」一类）——所以插件取到的那一版正文从未落盘：v1221 的日志 hash `33598e85…` 用快照 5173 正文的三种变体（trim / 加换行 / identity+anchor 拼接）都复算不出来。
+- 改动：端点新增显式审计开关 —— `persist: url.searchParams.get("audit") === "1"`。默认仍是 `false`（GET 依旧无副作用）；只有 `?audit=1` 才把**这一次真正返回的正文**写成一行快照，事后可按 `hash` 复算。
+- 测试：`MemoryCore/src/gateway/__tests__/soul-card-endpoint.test.ts` 新增「?audit=1：显式审计才把本次真正返回的正文落一行快照（正文/hash 与响应逐字一致）」——断言 `writeSoulSnapshot` 调用 1 次、`snap.contentHash === data.hash`、`JSON.parse(snap.payloadJson).text === data.text`；该文件 17 tests passed。
+- 历史结论：v1221 及更早的取卡 hash **不可复算**（不是数据损坏，是当时的正文没有留档）。今后对账优先用 `hash`/`textHash`（内容派生），不要用 `version`（落账计数）。
+- 回滚：删掉 `persist:` 那一行参数解析、改回 `persist: false`，并删该用例。
+- 实测（2026-11-20T10:21:51Z，Core 已带新代码）：`?audit=1` 返回 **v1225**、hash `0ba10a6e…`、chars **1592**、`blocks.boundaries` 191 字；`soul_snapshots` 新增 **id 5191**，`content_hash` 与响应 hash 逐字相同（`auditRowPersisted true`）。同一刻不带 audit 的调用仍是 **v1224** 且不落行——两条路径的差别只有「写不写这一行」。
+
+### 5.51.3 标签坏提案可观测：`label_proposal_invalid`（P1-6 的一半）
+
+- 问题：`parseTraitProtocolOutput` 对坏提案只是静默 `invalid += 1`，所以「标签没长」分不清是判侧没产票、还是产了被挡。
+- 改动（`MemoryCore/src/core/soul/trait-drift.ts`）：`TraitProtocolOutput` 增可选 `invalidLabelProposals?: number`（**仅 >0 时出现**，否则旧 `toEqual` 断言会因多一个恒 0 字段失败）；`export const LABEL_PROPOSAL_INVALID_CODE = "label_proposal_invalid"`；`traitProtocolGateBumps(out, { day, at, layer? })` 产出与 `worker.ts` `mergeCandidates` 同形的 `{day, code, layer, count, at}`，走同一个 `bumpSoulGateStats`。
+- 接线（`MemoryCore/src/core/soul/worker.ts`）：在 `resolveLabelProposals(...)` 之前插入 `proposalBumps` 块并 `store.bumpSoulGateStats(deps.tenant, proposalBumps)`；import 用**单独一行** `import { traitProtocolGateBumps } from "./trait-drift.js";`（该文件是 CRLF，多行 oldText 的编辑会冲突）。
+- 测试：`soul-trait-drift.test.ts` 5 例（坏提案计数、好提案不出现、bump 形状、坏票不算坏提案、缺字段按 0）；变异「注释掉 `invalidLabelProposals += 1`」→ 2 failed，还原后 20 passed。
+- 未闭环：**这次只做到「可观测」**。生产上是否有坏提案、标签净增长是否为 0，仍要等判侧真跑出提案（当前 `soul_gate_stats` 无任何 `label_*` 行、`soul_trait_label` 11-18 起 0 新增）——下一轮看到 `label_proposal_invalid` 有数才算这条生效。
+
+### 5.51.4 卡内块容量：2480 / 400 / 230 / 3 条（P2-8）
+
+- 改动（`MemoryCore/src/core/soul/card-v13.ts`）：`CARD_V13_MAX_CHARS` 2400 → **2480**；`CARD_V13_BLOCK_MAX_CHARS` 里 character **300 → 400**、boundaries **180 → 230**（九块上限之和仍 = 2400，+ 块标题与空行 ≤80 = 2480）；`boundariesBlock()` 的 `.slice(0, 2)` → **`.slice(0, 3)`**。
+- 依据：boundary 层在库里 4 条（全 frozen、无 supersededBy），旧上限 180 字只装 2 条；identity 21 条只能露出 3 句，300 字上限下被截断。
+- 测试（`card-v13.test.ts` 4 例）：3 条红线放得下而第 4 条仍裁掉、性格块 4 行、`sum(CARD_V13_BLOCK_MAX_CHARS) === 2400` 且 `2400 + 80 <= CARD_V13_MAX_CHARS`、扩容后整卡仍受总上限约束。变异「`.slice(0,3)`→2」「character 400→300」各 2 failed，还原后 16 passed。
+- 回滚：三处常量与 slice 改回原值（测试会一起红，说明这份文档与代码同步）。
+
+### 5.51.5 会话身份三条自愈路径（P0-2）
+
+`dsh-plugin/src/session-identity.ts`：`SKIP_RETRY_MIN_AGE_MS = 2*60*1000`（Core 重启窗口 10–60s，同一 turn 的多 step 只隔 ms–s）、`isCandidatesTransportSkip()`（剥 `candidates failed: ` 前缀后只认 `transport failure`/`timed out`，4xx/5xx 不重试）、`isStaleForRetry()`、`branchParentOf()`、`isEmptyTriple()`、`unambiguousTriple()`（多 team 只认 base.teamId、多 agent 只认 base.agentId，否则按歧义处理、不弹窗）。
+
+三条路径都**不弹窗**：
+
+1. `skipped` + 传输层原因 + 记录够旧 → `healSkipped()` 探一次，成功记 `source: "recovered"`（新增的 `IdentitySource` 值，与 `picked` 在审计里分开），失败只推 `at` 保持 `skipped`。
+2. `inherited` + 空三元组 + 父已绑定 → 直接抄父三元组（含 taskId），保持 `source: "inherited"`，**零网络**。
+3. `inherited` + 空三元组 + 父自己被传输层失败卡住（父可能再也不被调用，没人会去自愈它）→ 分支用**自己的** userKey 探一次（`healBranch()`），成功记 `recovered`，失败只推 `at` 并保持原 source/reason。
+
+- 测试：`dsh-plugin/test/session-identity.test.ts` 47 passed（含 11 个新用例；第 3 条路径的用例『an empty inherited branch whose parent is stuck on a transport skip probes once and recovers』断言 `calls === 1`、未弹窗、`source: "recovered"`）；全量 `npm test` **50 files / 867 tests passed**。变异「`if (parent.source === 'skipped' && isEmptyTriple(parent))` → `if (false && …)`」→ 1 failed，还原通过。
+- 生效条件：**宿主重启**（插件产物要重新加载）。历史 176 条 inherited 空三元组的分支不会回填——它们的父会话若不是「传输层跳过」，按规则就不该被替它绑定。
+
+### 5.51.6 数据面清理：孤儿向量 64 行、悬挂边 175 条（P1-3/P1-4）
+
+- 脚本：`MemoryCore/scripts/prune-orphan-vectors.mjs`（默认 dry-run；`--apply` 前 `VACUUM INTO` 备份；用 `sqlite-vec` 的 `getLoadablePath()` 加载 `vec0.dll`（v0.1.7-alpha.2）删 vec0 行；`detectVecKeyMode()` 处理「带 `record_id TEXT PRIMARY KEY` 的 vec0 不暴露 rowid」；审计 JSON 里分开记 `shadowRowsRemovedByVec0` 与 `shadowRowsDeletedExplicitly`）与 `MemoryCore/scripts/prune-dangling-links.mjs`（`isAlive = l1_records ∪ l1_archive`；`profile:v1:` 命名空间只有显式 `--include-profile-source` 才动；按 rowid 精确删边 + 审计）。
+- 生产 apply 读数：向量侧 `l1_vec` 删 **37** 行、`l1_fact_vec` 删 **27** 行（其中 inArchive 23/16，两表都不存在 14/11；`shadowRowsRemovedByVec0` 37/27），备份 `D:/TDB/data/backups/pre-orphan-vector-prune-2026-11-20T02-08-…db`，`orphansAfter` 两表归 0；边侧删 **175** 条（`danglingEdgesRemaining: 0`，`excludedProfileNsSource: 260769`），备份 `pre-dangling-link-prune-2026-11-20T02-08-29-066Z.db` + 审计 `dangling-link-prune-2026-11-20T02-08-29-066Z.json`。
+- 与交接数字的偏差（实测为准）：交接写的 23/16 只数了「记录已归档」的部分，实际孤儿向量是 **37/27**（另 14/11 条记录两张表都不在）；`l1_links` 总数当时 284764→删后 284589（线上仍在写入）。
+- 回滚：备份库直接覆盖回 `D:/TDB/data/vectors.db`（先停 Core）。
+
+### 5.51.7 台账
+
+| 编号 | 变更面 | 回滚 |
+|---|---|---|
+| R33-1 | `start-tdb-supervised.ps1` 健康门 90→240s（运行环境，不进 git） | 改回 90 |
+| R33-2 | `soul-card-endpoint.ts` 新增 `?audit=1`（默认行为不变）+ 1 测试 | 删参数解析、改回 `persist:false` |
+| R33-3 | `trait-drift.ts` 增 `invalidLabelProposals`/`label_proposal_invalid`/`traitProtocolGateBumps`；`worker.ts` 接线 | 删导出与 3 行接线 |
+| R33-4 | `card-v13.ts` 2480/400/230/slice(0,3) + 4 测试 | 改回 2400/300/180/slice(0,2) |
+| R33-5 | `session-identity.ts` 三条自愈路径 + `recovered` + 11 测试 | 删 `reconcileExisting`/`healSkipped`/`healBranch` 与其调用 |
+| R33-6 | 两个 prune 脚本（新增文件）+ 生产数据清理（有备份/审计） | 用 `D:/TDB/data/backups/` 下的备份覆盖 |
+
+### 5.51.8 仍未闭环（如实）
+
+1. **P1-6 的后半**：`stats.usage` 仍是 9 轮 0 重叠（`withOverlap` 定义是 matchedLines>0），「回复体现人格」没有正证据；标签净增长 0 现在能归因（`label_proposal_invalid`），但要等真实提案出现才有读数。
+2. **P2-9**：`stats.proof.shape` 与 `snapshot.provenanceEvidence` 仍是「待部署」——前者需要已绑定身份的会话段读（本会话树 176 条继承空身份）、后者需要 >5 出处的真实条目。
+3. **P2-10**：41 矩阵 8 条未验证（A4/B5/B6/B8/B9/B10/B12/E2）。B 组缺 fixture（承诺三态、断联人、标签生长语料），E2 的 `valid_to` 语义是产品决策（当前失效靠 `state=degraded`，`planLifecycle` 不写 `valid_to`）。
+4. **identity 默认绑定**：产品决策（用户 2026-11-19 明确选择「按需绑定」），本节的三条自愈只在「曾经尝试过、被传输层挡掉」的场景补位，不改变默认。
+5. **历史快照不可复算**：v1221 及更早的取卡正文没有留档，`?audit=1` 只对之后的取卡有效。
+
 ## 6. 排查清单
 
 ```bash
