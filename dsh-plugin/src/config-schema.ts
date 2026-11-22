@@ -77,19 +77,15 @@ export const VOLATILE_PATHS = [
   'volatile.maxChars',
   'tools.enabled',
   'tools.recall',
-  // task-117: the session-start Team/Agent picker. Four knobs, all of them
-  // things an operator flips without a rebuild (a headless host has no card to
-  // answer, and the timeout is the difference between 'ask' and 'hang').
-  'identity.askAtSessionStart',
+  // task-117 v4: the identity chip in the composer tool row. Two knobs only --
+  // the picker itself has no clock and no option order to configure, because it
+  // is a panel the user opens, not a question the host has to be answered.
+  // Master switch: a headless composition turns it off and keeps the triple.
+  'identity.enabled',
   // Faithful to the proxy's session-init: whether the per-user session_init
-  // config is honoured at all. false = never read it, always ask (automation).
+  // config is honoured at all. false = never read it, always use the chip.
   'identity.followUserSessionInit',
-  'identity.askTimeoutMs',
   'identity.rememberSession',
-  'identity.skipDefault',
-  // The THIRD session-start question (the proxy's task_select stage). Optional
-  // scope: off means x-tdai-task-id is never sent.
-  'identity.askForTask',
   // task-72: the skill surface. Two knobs an operator must be able to flip
   // without a rebuild — the listing (read) and the six destructive write tools
   // (opt-in) — plus the listing's own budget.
@@ -124,12 +120,9 @@ const DESCRIPTIONS: Record<string, string> = {
   'volatile.maxChars': 'Hard character cap for the per-turn volatile block (memories and segments together; 200-20000).',
   'tools.enabled': 'Register the memory tools (recall/write).',
   'tools.recall': 'Register the read-only recall tool.',
-  'identity.askAtSessionStart': 'Master switch for the session-start card: off means never read the user config and never ask (automation).',
-  'identity.followUserSessionInit': 'Honour the per-user session_init config: preset/bypass bind silently, ask shows the card every session.',
-  'identity.askTimeoutMs': 'How long the session-start picker waits for an answer before falling back (1000-300000).',
-  'identity.rememberSession': 'Remember the pick per session on disk, so a restart does not ask again.',
-  'identity.skipDefault': 'Put the "do not associate" option first: ignoring the card means no team context.',
-  'identity.askForTask': 'Ask which Task (work item) the session belongs to, after Team and Agent: the answer becomes the optional task scope (x-tdai-task-id).',
+  'identity.enabled': 'Master switch for the session identity chip: off means never resolve an identity, never fetch candidates, and use the configured triple (automation).',
+  'identity.followUserSessionInit': 'Honour the per-user session_init config: a preset binds silently (its default agent is shown locked, not selectable), default_associate=0 associates nothing.',
+  'identity.rememberSession': 'Remember the binding per session on disk, so a restart does not resolve it again.',
   'skill.enabled': 'Inject the <available_skills> listing into the head pack and register the skill tools.',
   'skill.allowLlmWrite': 'Let the model create, patch and delete shared team skills (six write tools). Off by default.',
   'skill.headPackChars': 'Character budget for the <available_skills> head-pack section (0-64000).',

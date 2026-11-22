@@ -508,6 +508,60 @@ window.__ModuleLoader__.load({
 		"servicesNoteStopped": "Stop requested."
 };
 
+	/** The composer identity chip's copy (task-117 v4). */
+	const identityZh = {
+		identityChip: "TDB 记忆",
+		identityChipChoose: "TDB 记忆 · 选择",
+		identityChipStaged: "TDB 记忆 · 待生效",
+		identityChipNone: "TDB 记忆 · 未关联",
+		identityEditable: "可改",
+		identityUnresolved: "上次解析未完成（核心服务不可达或候选有歧义）。在这里重新选一次即可生效。",
+		identityChipUnresolved: "TDB 记忆 · 未关联 · 点此设置",
+		identityEmpty: "选一个 Agent，或本次不关联",
+		identityPanelTitle: "本次会话的记忆范围",
+		identityTeam: "Team",
+		identityAgent: "Agent",
+		identityTask: "工作项（可选）",
+		identityNoTask: "本次不关联任务",
+		identityPresetLocked: "用户配置的默认 Agent（固定，不可选）",
+		identityConfirm: "确定",
+		identityDecline: "本次不关联",
+		identityCancel: "取消",
+		identityStaged: "已选择；发送第一条消息后生效，之后不可修改。",
+		identityLocked: "这个会话已经绑定身份，不能再改。想换人设请新建会话。",
+		identityBound: "已在本次会话生效，不可修改。",
+		identityInert: "当前组合没有 user key，无法列出身后的 Team/Agent。",
+		identityFailed: "取候选失败：",
+		identityNoAgents: "这个 Team 下没有可用的 Agent。",
+		identityPickTeam: "先选 Team"
+	};
+	const identityEn = {
+		identityChip: "TDB memory",
+		identityChipChoose: "TDB memory · choose",
+		identityChipStaged: "TDB memory · pending",
+		identityChipNone: "TDB memory · none",
+		identityEditable: "editable",
+		identityUnresolved: "The last resolution did not finish (core unreachable or ambiguous candidates). Pick here to apply it.",
+		identityChipUnresolved: "TDB memory · none · set it here",
+		identityEmpty: "Pick an agent, or leave this conversation unassociated",
+		identityPanelTitle: "Memory scope for this conversation",
+		identityTeam: "Team",
+		identityAgent: "Agent",
+		identityTask: "Work item (optional)",
+		identityNoTask: "No work item",
+		identityPresetLocked: "Default agent from your user config (fixed, not selectable)",
+		identityConfirm: "Confirm",
+		identityDecline: "Do not associate",
+		identityCancel: "Cancel",
+		identityStaged: "Chosen; it takes effect with the first message and cannot be changed after.",
+		identityLocked: "This conversation already has its identity; open a new one to change it.",
+		identityBound: "Already active for this conversation and not editable.",
+		identityInert: "This composition has no user key, so no Team/Agent can be listed.",
+		identityFailed: "Could not load candidates: ",
+		identityNoAgents: "This Team has no agent available.",
+		identityPickTeam: "Choose a Team first"
+	};
+
 		/** The form frame's copy, read from this page's dictionary. */
 		function formLabels(t) {
 			return {
@@ -519,7 +573,7 @@ window.__ModuleLoader__.load({
 			};
 		}
 
-		const css = "._tdbAgemem_page{display:grid;gap:12px}._tdbAgemem_heading{color:var(--dsw-alias-label-primary);margin:0;font-size:15px;font-weight:600;line-height:1.4}._tdbAgemem_section{display:grid;gap:10px}._tdbAgemem_toggleRow{color:var(--dsw-alias-label-primary);justify-content:space-between;align-items:flex-start;gap:16px;font-size:13px;line-height:1.5;display:flex}._tdbAgemem_hint{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:1.5}._tdbAgemem_divider{color:var(--dsw-alias-label-tertiary);margin:2px 0 0;padding-top:10px;border-top:1px solid var(--dsw-alias-border-secondary);font-size:12px;line-height:1.5}._tdbAgemem_table{width:100%;border-collapse:collapse;font-size:13px}._tdbAgemem_th{text-align:left;font-weight:500;padding:6px 8px;color:var(--dsw-alias-label-tertiary);border-bottom:1px solid var(--dsw-alias-border-secondary)}._tdbAgemem_cell{padding:7px 8px;color:var(--dsw-alias-label-primary);border-bottom:1px solid var(--dsw-alias-border-secondary)}._tdbAgemem_dot{display:inline-block;width:8px;height:8px;border-radius:8px;margin-right:6px;vertical-align:middle}._tdbAgemem_dotOn{background:#2f9e44}._tdbAgemem_dotOff{background:#e03131}._tdbAgemem_button{cursor:pointer;border-radius:8px;border:1px solid var(--dsw-alias-border-secondary);background:transparent;color:var(--dsw-alias-label-primary);padding:4px 12px;font-size:13px;font-family:inherit}._tdbAgemem_buttonPrimary{background:var(--dsw-alias-interactive-bg-brand,#4c6ef5);color:#fff;border:none}._tdbAgemem_buttonDanger{color:#e03131}._tdbAgemem_button:disabled{opacity:.45;cursor:default}._tdbAgemem_error{color:#e03131}";
+		const css = "._tdbAgemem_page{display:grid;gap:12px}._tdbAgemem_heading{color:var(--dsw-alias-label-primary);margin:0;font-size:15px;font-weight:600;line-height:1.4}._tdbAgemem_section{display:grid;gap:10px}._tdbAgemem_toggleRow{color:var(--dsw-alias-label-primary);justify-content:space-between;align-items:flex-start;gap:16px;font-size:13px;line-height:1.5;display:flex}._tdbAgemem_hint{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:1.5}._tdbAgemem_divider{color:var(--dsw-alias-label-tertiary);margin:2px 0 0;padding-top:10px;border-top:1px solid var(--dsw-alias-border-secondary);font-size:12px;line-height:1.5}._tdbAgemem_table{width:100%;border-collapse:collapse;font-size:13px}._tdbAgemem_th{text-align:left;font-weight:500;padding:6px 8px;color:var(--dsw-alias-label-tertiary);border-bottom:1px solid var(--dsw-alias-border-secondary)}._tdbAgemem_cell{padding:7px 8px;color:var(--dsw-alias-label-primary);border-bottom:1px solid var(--dsw-alias-border-secondary)}._tdbAgemem_dot{display:inline-block;width:8px;height:8px;border-radius:8px;margin-right:6px;vertical-align:middle}._tdbAgemem_dotOn{background:#2f9e44}._tdbAgemem_dotOff{background:#e03131}._tdbAgemem_button{cursor:pointer;border-radius:8px;border:1px solid var(--dsw-alias-border-secondary);background:transparent;color:var(--dsw-alias-label-primary);padding:4px 12px;font-size:13px;font-family:inherit}._tdbAgemem_buttonPrimary{background:var(--dsw-alias-interactive-bg-brand,#4c6ef5);color:#fff;border:none}._tdbAgemem_buttonDanger{color:#e03131}._tdbAgemem_button:disabled{opacity:.45;cursor:default}._tdbAgemem_error{color:#e03131}._tdbAgemem_chipWrap{position:relative;display:inline-flex}._tdbAgemem_chip{cursor:pointer;border-radius:999px;border:1px solid var(--dsw-alias-border-secondary);background:transparent;color:var(--dsw-alias-label-primary);padding:2px 10px;font-size:12px;line-height:1.6;font-family:inherit;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}._tdbAgemem_chip:hover{border-color:var(--dsw-alias-border-primary,var(--dsw-alias-border-secondary))}._tdbAgemem_chipStatic{cursor:default;color:var(--dsw-alias-label-secondary)}._tdbAgemem_chipDot{width:6px;height:6px;border-radius:6px;background:#2f9e44;display:inline-block}._tdbAgemem_chipDotOff{background:var(--dsw-alias-label-tertiary)}._tdbAgemem_panel{position:absolute;bottom:calc(100% + 8px);left:0;z-index:40;width:320px;max-height:60vh;overflow:auto;display:grid;gap:10px;padding:12px;border-radius:12px;border:1px solid var(--dsw-alias-border-secondary);background:var(--dsw-alias-bg-elevated,var(--dsw-alias-bg-primary,#fff));box-shadow:0 8px 28px rgba(0,0,0,.16)}._tdbAgemem_panelTitle{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary);margin:0}._tdbAgemem_panelRow{display:grid;gap:4px}._tdbAgemem_panelLabel{font-size:11px;color:var(--dsw-alias-label-tertiary);margin:0}._tdbAgemem_choice{text-align:left;cursor:pointer;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-primary);padding:4px 8px;font-size:12px;line-height:1.5;font-family:inherit;display:flex;justify-content:space-between;gap:8px;align-items:center}._tdbAgemem_choice:hover{background:var(--dsw-alias-bg-secondary,transparent)}._tdbAgemem_choiceOn{border-color:var(--dsw-alias-interactive-border-brand,var(--dsw-alias-border-primary,currentColor));font-weight:600}._tdbAgemem_choiceLocked{cursor:default;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-secondary,transparent);border-color:var(--dsw-alias-border-secondary)}._tdbAgemem_panelActions{display:flex;justify-content:flex-end;gap:8px}";
 		const cssId = "@tdb/agemem-dsh/client.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(cssId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -900,6 +954,355 @@ window.__ModuleLoader__.load({
 			});
 		}
 
+	/* ---------------------------------------------------------------------- *
+	 * Identity chip (task-117 v4).
+	 *
+	 * The host refuses to swap an agent's tools once a turn has run, so the
+	 * conversation's memory scope has to be chosen BEFORE the first turn -- which
+	 * is why this is a chip in the composer tool row (next to the model picker)
+	 * rather than a dialog raised from a pre-step. Picking stages a choice on the
+	 * server; the session's first turn commits it; from then on the chip renders
+	 * as a read-only label, the same rule the host applies to its own preset.
+	 *
+	 * It renders nothing when the transport is absent (the plugin's identity
+	 * section can be switched off, and a host without a web server has no
+	 * routes), so a disabled plugin leaves no trace in the composer.
+	 * ---------------------------------------------------------------------- */
+	const IDENTITY_STATE = "/tdb-identity/state";
+	const IDENTITY_CHOOSE = "/tdb-identity/choose";
+
+	function identityLabelOf(option) {
+		return option && typeof option.label === "string" ? option.label : "";
+	}
+
+	/** One request against the chip's transport; null on any failure. */
+	async function identityRequest(url, init) {
+		try {
+			const response = await fetch(url, init);
+			const payload = await response.json().catch(() => null);
+			if (payload === null || payload.ok !== true || payload.data === undefined) return null;
+			return payload.data;
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Same request, but keep the server's error code. The chip needs it to tell
+	 * 「this conversation is already pinned」apart from 「the request failed」-- both
+	 * look identical to a boolean, and one of them is not retryable.
+	 */
+	async function identitySend(url, init) {
+		try {
+			const response = await fetch(url, init);
+			const payload = await response.json().catch(() => null);
+			if (payload !== null && payload.ok === true && payload.data !== undefined) {
+				return { data: payload.data, error: "" };
+			}
+			return { data: null, error: payload && typeof payload.error === "string" ? payload.error : "failed" };
+		} catch {
+			return { data: null, error: "failed" };
+		}
+	}
+
+	function IdentityChip(props) {
+		const { useCallback, useEffect, useRef, useState } = require("react");
+		const t = props.t;
+		const sessionId = typeof props.sessionId === "string" ? props.sessionId : "";
+		const [state, setState] = useState(null);
+		const [open, setOpen] = useState(false);
+		const [busy, setBusy] = useState(false);
+		const [note, setNote] = useState("");
+		const [teamId, setTeamId] = useState("");
+		const [agentId, setAgentId] = useState("");
+		const [taskId, setTaskId] = useState("");
+		// A pick that this component staged but that the first turn has not yet
+		// written into the store. Kept locally (not only in the server's staged
+		// map) so the chip can show 「待生效」between the click and the first turn
+		// without a second round trip landing on a stale snapshot.
+		const [stagedPicked, setStagedPicked] = useState(false);
+		const mounted = useRef(true);
+		useEffect(() => () => {
+			mounted.current = false;
+		}, []);
+		const load = useCallback(async (nextTeamId) => {
+			if (sessionId === "") return;
+			const url = IDENTITY_STATE + "?sessionId=" + encodeURIComponent(sessionId)
+				+ (typeof nextTeamId === "string" && nextTeamId !== "" ? "&teamId=" + encodeURIComponent(nextTeamId) : "");
+			const data = await identityRequest(url, { headers: { Accept: "application/json" } });
+			if (!mounted.current) return;
+			setState(data);
+			if (data === null) return;
+			// The first turn has committed the pick: the server now owns the answer,
+			// so the local 「待生效」flag must fall away. Without this the chip keeps
+			// claiming a pick is pending long after it took effect (measured
+			// 2026-11-22 11:32, session a0166b0a: store committed at :28, chip still
+			// said 「待生效」because nothing reloaded after the turn).
+			// "The server owns the answer" only once the row is no longer a pre-answer:
+			// a creation-time row is exactly the state the pick is still waiting on.
+			if (data.bound && data.bound.unconfirmedAt === undefined) setStagedPicked(false);
+			const preset = data.teamId !== undefined && data.teamId !== "" ? data.teamId : (data.teams[0] ? data.teams[0].id : "");
+			setTeamId((previous) => (previous !== "" ? previous : preset));
+			const stagedAgent = data.staged ? data.staged.agentId : "";
+			// The account's preset agent (locked) IS the default: preselect it, so the
+			// panel shows "this is your default" instead of quietly defaulting to some
+			// other agent in the list.
+			const lockedAgent = data.agents.find((option) => option.locked === true);
+			// Never preselect on the user's behalf when the row is still open: the
+			// 「待生效」chip says a pick is pending, and quietly filling in an agent
+			// would then commit a choice nobody made on the next 确定.
+			const openRow = data.editable === true || (data.bound && data.bound.unconfirmedAt !== undefined);
+			// A preset agent is the user's own configured default, so preselecting it is not
+		// "choosing on their behalf" — it also keeps 确定 usable while the row is open.
+		// Any other open row stays empty: an accidental 确定 must not commit a pick
+		// nobody made (2026-11-22 12:13, session 0a7a0854).
+		const choice = stagedAgent !== ""
+				? stagedAgent
+				: lockedAgent ? lockedAgent.id : (openRow ? "" : (data.agents[0] || {}).id || "");
+			setAgentId((previous) => (previous !== "" ? previous : choice));
+			setTaskId(data.staged && typeof data.staged.taskId === "string" ? data.staged.taskId : "");
+		}, [sessionId]);
+		useEffect(() => {
+			if (open) void load(teamId);
+		}, [open, load]);
+		useEffect(() => {
+			void load("");
+		}, [load]);
+		// While a pick is waiting for the first turn to commit it, keep asking. The
+		// commit happens on the SERVER during the next turn, and nothing in the
+		// composer re-renders on that event, so a one-shot load would leave the
+		// chip showing 「待生效」forever. Bounded by stagedPicked: it clears on the
+		// first reload that reports a bound identity.
+		// A creation-time answer ("pre-answer") is also waiting for its first turn to
+		// confirm it, and the composer does not re-render when that happens server-side.
+		// Without polling for it too, the chip keeps saying 「可改」after the row is
+		// already frozen (measured 2026-11-22 12:14, session 0a7a0854: store confirmed at
+		// :04, chip still offered an edit until a manual reload).
+		const preAnswerOpen = state !== null && state.editable === true;
+		useEffect(() => {
+			if (!stagedPicked && !preAnswerOpen) return undefined;
+			const timer = setInterval(() => { void load(""); }, 3000);
+			return () => clearInterval(timer);
+		}, [stagedPicked, preAnswerOpen, load]);
+		if (sessionId === "") return null;
+
+		const bound = state && state.bound ? state.bound : null;
+		const staged = (state && state.staged ? state.staged : null) !== null || stagedPicked ? true : null;
+		// The label the server froze into the binding wins over the live list: the
+		// list is empty whenever a candidates read failed, and a read-only chip
+		// that answers with 「agt-3i8k22f496」is useless to the person reading it.
+		const agentLabel = (id) => {
+			if (bound !== null && bound.agentId === id && typeof bound.agentLabel === "string" && bound.agentLabel !== "") {
+				return bound.agentLabel;
+			}
+			const found = state && Array.isArray(state.agents) ? state.agents.find((option) => option.id === id) : null;
+			return found ? identityLabelOf(found) : id;
+		};
+		// Bound: a read-only label. An empty teamId with associate:false is the
+		// explicit 「本次不关联」. An EMPTY TRIPLE nobody chose (candidates failed, or
+		// ambiguous with the chip unused) is unresolved, not declined -- it must stay
+		// editable, otherwise a 3-second core restart locks the conversation out of
+		// the preset the user actually configured.
+		// A pre-answer (rules-written row, no turn yet) keeps the panel reachable:
+		// with a default agent configured the conversation used to be frozen the
+		// moment it existed, so 「本次不关联」/换人 was unreachable (rule ②, measured
+		// 2026-11-22 11:56 session-7ce40b5d). state.editable is that window.
+		if (bound !== null && state.unresolved !== true && state.editable !== true) {
+			const text = bound.teamId === ""
+				? t("identityChipNone")
+				: t("identityChip") + " · " + agentLabel(bound.agentId);
+			return px("span", {
+				className: "_tdbAgemem_chip _tdbAgemem_chipStatic",
+				title: t("identityBound"),
+				children: [
+					px("span", { className: "_tdbAgemem_chipDot" }),
+					px("span", { children: text })
+				]
+			});
+		}
+		// Hidden until the transport answers: a host that serves no routes (or a
+		// plugin whose identity section is off) must not leave a dead chip behind.
+		if (state === null) return null;
+		if (state.status === "inert") return null;
+
+		const commit = async () => {
+			setBusy(true);
+			setNote("");
+			const result = await identitySend(IDENTITY_CHOOSE, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Accept: "application/json" },
+				body: JSON.stringify({ sessionId, teamId, agentId, taskId })
+			});
+			if (!mounted.current) return;
+			setBusy(false);
+			if (result.data === null) {
+				setNote(result.error === "already-committed" ? t("identityLocked") : t("identityFailed") + "choose");
+				void load(teamId);
+				return;
+			}
+			setOpen(false);
+			setStagedPicked(true);
+			setNote(t("identityStaged"));
+			void load(teamId);
+		};
+		const decline = async () => {
+			setBusy(true);
+			setNote("");
+			const result = await identitySend(IDENTITY_CHOOSE, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Accept: "application/json" },
+				body: JSON.stringify({ sessionId, associate: false })
+			});
+			if (!mounted.current) return;
+			setBusy(false);
+			if (result.data === null) {
+				setNote(result.error === "already-committed" ? t("identityLocked") : t("identityFailed") + "choose");
+				void load("");
+				return;
+			}
+			setOpen(false);
+			setStagedPicked(true);
+			setNote(t("identityStaged"));
+			void load("");
+		};
+
+		const teams = Array.isArray(state.teams) ? state.teams : [];
+		const agents = Array.isArray(state.agents) ? state.agents : [];
+		// preset 给了默认 agent：它就是**固定**的（名称与 id 只展示），面板里不再
+		// 出现别的 agent 可选。想换人设请去改 userKey 的 session_init 默认，
+		// 或者在这里选「本次不关联」让这一条对话不带记忆。
+		const presetAgent = agents.find((option) => option.locked === true) || null;
+		const tasks = Array.isArray(state.tasks) ? state.tasks : [];
+		// A staged pick IS the answer to whatever the unresolved hint was about:
+		// telling the user 「上次解析未完成」after they just picked would read as
+		// "your click did not register". So staged outranks unresolved here.
+		// 「待生效」covers both cases that are true only after the next turn: a click
+		// just made, and a row that is still the creation-time answer.
+		// 「待生效」means the user picked something and the first turn has not written it
+		// yet. A creation-time answer is NOT a pick: it is what this account defaults to,
+		// so the chip says which agent it is and marks it editable (the panel can still
+		// change it or decline before the first message).
+		const chipText = staged !== null
+			? t("identityChipStaged")
+			: state.editable === true
+				? (bound !== null && bound.agentId !== ""
+					? t("identityChip") + " · " + agentLabel(bound.agentId) + " · " + t("identityEditable")
+					: t("identityChipChoose"))
+				: state.unresolved === true ? t("identityChipUnresolved") : t("identityChipChoose");
+		const rows = [];
+		rows.push(px("p", { className: "_tdbAgemem_panelTitle", children: t("identityPanelTitle") }));
+		if (state.unresolved === true) {
+			rows.push(px("p", { className: "_tdbAgemem_hint", children: t("identityUnresolved") }));
+		}
+		if (state.status === "failed") {
+			rows.push(px("p", { className: "_tdbAgemem_hint", children: t("identityFailed") + String(state.reason || "") }));
+		}
+		if (teams.length > 1 && presetAgent === null) {
+			rows.push(pxs("div", {
+				className: "_tdbAgemem_panelRow",
+				children: [
+					px("p", { className: "_tdbAgemem_panelLabel", children: t("identityTeam") }),
+					px("select", {
+						className: "_tdbAgemem_choice",
+						value: teamId,
+						onChange: (event) => {
+							const next = event.target.value;
+							setTeamId(next);
+							setAgentId("");
+							setTaskId("");
+							void load(next);
+						},
+						children: teams.map((option) => px("option", { value: option.id, children: identityLabelOf(option) }, option.id))
+					})
+				]
+			}));
+		}
+		rows.push(pxs("div", {
+			className: "_tdbAgemem_panelRow",
+			children: [
+				px("p", { className: "_tdbAgemem_panelLabel", children: t("identityAgent") }),
+				agents.length === 0
+					? px("p", { className: "_tdbAgemem_hint", children: teams.length > 1 && teamId === "" ? t("identityPickTeam") : t("identityNoAgents") })
+					: pxs("div", {
+						style: { display: "grid", gap: "2px" },
+						children: (presetAgent !== null ? [presetAgent] : agents).map((option) => (
+							option.locked === true
+								? px("div", {
+									className: "_tdbAgemem_choice _tdbAgemem_choiceLocked",
+									title: t("identityPresetLocked"),
+									children: [
+										px("span", { children: identityLabelOf(option) }),
+										px("span", { className: "_tdbAgemem_hint", children: t("identityPresetLocked") })
+									]
+								}, option.id)
+								: px("button", {
+									type: "button",
+									className: "_tdbAgemem_choice" + (agentId === option.id ? " _tdbAgemem_choiceOn" : ""),
+									onClick: () => setAgentId(option.id),
+									children: [
+										px("span", { children: identityLabelOf(option) }),
+										agentId === option.id ? px("span", { children: "✓" }) : null
+									]
+								}, option.id)
+						))
+					})
+			]
+		}));
+		rows.push(pxs("div", {
+			className: "_tdbAgemem_panelRow",
+			children: [
+				px("p", { className: "_tdbAgemem_panelLabel", children: t("identityTask") }),
+				px("select", {
+					className: "_tdbAgemem_choice",
+					value: taskId,
+					onChange: (event) => setTaskId(event.target.value),
+					children: [
+						px("option", { value: "", children: t("identityNoTask") }),
+						...tasks.map((option) => px("option", { value: option.id, children: identityLabelOf(option) }, option.id))
+					]
+				})
+			]
+		}));
+		rows.push(pxs("div", {
+			className: "_tdbAgemem_panelActions",
+			children: [
+				px("button", {
+					type: "button",
+					className: "_tdbAgemem_button",
+					disabled: busy,
+					onClick: decline,
+					children: t("identityDecline")
+				}),
+				px("button", {
+					type: "button",
+					className: "_tdbAgemem_button _tdbAgemem_buttonPrimary",
+					disabled: busy || agentId === "",
+					onClick: commit,
+					children: t("identityConfirm")
+				})
+			]
+		}));
+
+		return pxs("div", {
+			className: "_tdbAgemem_chipWrap",
+			children: [
+				pxs("button", {
+					type: "button",
+					className: "_tdbAgemem_chip",
+					onClick: () => setOpen((previous) => !previous),
+					title: note !== "" ? note : t("identityPanelTitle"),
+					children: [
+						px("span", { className: "_tdbAgemem_chipDot _tdbAgemem_chipDotOff" }),
+						px("span", { children: chipText }),
+						px("span", { children: open ? "▴" : "▾" })
+					]
+				}),
+				open ? pxs("div", { className: "_tdbAgemem_panel", children: rows }) : null,
+				open === false && note !== "" ? px("span", { className: "_tdbAgemem_hint", style: { display: "none" }, children: note }) : null
+			]
+		});
+	}
+
 		/** Required services (cordis fiber inject). */
 		const inject = ["slots", "locale", "remote", "remote.credentials", "configForms"];
 
@@ -912,7 +1315,7 @@ window.__ModuleLoader__.load({
 			const t = ctx.locale.bind(NS);
 			// One namespace, two pages: the service-stack page joined this plugin in
 			// Wave 4, so its copy rides the same registration.
-			ctx.effect(() => ctx.locale.register(NS, { zh: { ...zh, ...servicesZh }, en: { ...en, ...servicesEn } }), "tdb-agemem: dictionaries");
+			ctx.effect(() => ctx.locale.register(NS, { zh: { ...zh, ...servicesZh, ...identityZh }, en: { ...en, ...servicesEn, ...identityEn } }), "tdb-agemem: dictionaries");
 			const card = new AgememFormController(ctx.configForms.get(ENTRY_ID), ctx);
 			ctx.effect(() => () => {
 				card.dispose();
@@ -961,6 +1364,23 @@ window.__ModuleLoader__.load({
 				inject: () => ({ t })
 			}, ServicesSection));
 			if (typeof dropServices === "function") ctx.effect(() => dropServices, "tdb-agemem: service stack page");
+
+			/*
+			 * task-117 v4: the identity chip. It sits in the composer tool row, left
+			 * of the input, next to whatever control the host puts there -- the
+			 * position the user pointed at ("参照会话框选择模型位置"). It is NOT tied
+			 * to configForms: identity works even when the settings form is
+			 * unavailable, and the chip hides itself when its transport is absent.
+			 */
+			const dropChip = ctx.slots.inject("conversation.input.left", () => ctx.slots.register({
+				name: "conversation.input.left",
+				id: "tdb-agemem-identity",
+				order: 20,
+				label: () => t("identityChip"),
+				locale: NS,
+				inject: () => ({ t })
+			}, IdentityChip));
+			if (typeof dropChip === "function") ctx.effect(() => dropChip, "tdb-agemem: identity chip");
 		}
 
 		exports.NS = NS;

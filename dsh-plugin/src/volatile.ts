@@ -58,7 +58,14 @@ export interface VolatileTurnContext {
 export interface VolatileInjectionReport {
   sessionKey: string;
   turn: number | null;
-  volatile: { chars: number; hash: string; skipped: boolean };
+  /**
+   * chars = 本轮整块（记忆 + 场合 + 人格尾巴 + 状态段）实际 append 的字符数。
+   * personaChars = 其中人格尾巴那一段的字符数，与 Core turnChars 同定义（同一串
+   *   assembleSoulTurn 文本、同一 400 字上限）。两者不可互换：旧代码与运行手册曾断言
+   *   「volatile.chars 与 turnChars 同定义」，实测 6/6 会话不等、量级差 1-17 倍（A5 复核），
+   *   因此 chars 对账必须读 personaChars；缺这个键（旧插件）时该会话不参与 chars 对账。
+   */
+  volatile: { chars: number; hash: string; skipped: boolean; personaChars?: number };
 }
 
 /**
@@ -82,6 +89,8 @@ export interface VolatileBlockResult {
     stateDropped?: string;
     /** 状态里被裁掉的行数（部分丢弃时才有）。 */
     droppedStateLines?: number;
+    /** 人格尾巴段实际进 prompt 的字符数（整段被裁则为 0）。与 Core turnChars 同定义。 */
+    personaChars?: number;
   };
 }
 
@@ -325,6 +334,7 @@ export function installVolatile(ctx: AgememContext, deps: VolatileDeps): () => v
                 ...(audit.injectedStateLines === undefined ? {} : { injectedStateLines: audit.injectedStateLines }),
                 ...(audit.stateDropped === undefined ? {} : { stateDropped: audit.stateDropped }),
                 ...(audit.droppedStateLines === undefined ? {} : { droppedStateLines: audit.droppedStateLines }),
+                ...(audit.personaChars === undefined ? {} : { personaChars: audit.personaChars }),
               };
         if (text === '') return decision;
         // Line-aware clamp: never cut a memory entry in the middle of its text.
@@ -381,7 +391,13 @@ export function installVolatile(ctx: AgememContext, deps: VolatileDeps): () => v
         report({
           sessionKey: scope,
           turn: turnNumber ?? null,
-          volatile: { chars: clamped.length, hash: blockHash, skipped: false },
+          volatile: {
+            chars: clamped.length,
+            hash: blockHash,
+            skipped: false,
+            // 只在与 Core turnChars 同定义时才上报：整块被裁到切掉尾巴时如实报 0。
+            ...(audit?.personaChars === undefined ? {} : { personaChars: audit.personaChars }),
+          },
         });
         recordInjection(deps.injectionLog, {
           event: 'turn-append',

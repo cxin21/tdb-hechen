@@ -86,3 +86,42 @@ recorder 原文：同一轮 `/v3/recall` 带 `"agent":"agt-2m7buribzz"`（绑定
 - 临时诊断块已删（`src/index.ts` 里的 `AGEMEM_TRACE_PATH` append，含 `appendFileSync` import）。
 - 旧「设置页 / 回环 identity API」方案已归档到 `scratch/archive/identity-server.ts`，运行时接线（`server.identityPort`、`identityApi=` 读数）全部移除，`VOLATILE_PATHS` 现 29 条（含 `identity.*` 四条）。
 - 一次性 profile 只装在 `scratch/e2e5/home`（`DSH_HOME` 隔离），用户正在跑的 `desktop` profile 全程 `--dry-run` 未触碰；未 commit。
+
+## 8. v4 退役（2026-11-22，task-117 / m08428）——本文档描述的弹窗链路已删除
+
+本文 1–7 节记录的是 **v3**（会话开始用 `ctx.userQuestions.ask` 连问三题）。v4 已把这条链路**整体删除**，只保留「读用户级 `session_init` 决定 preset / bypass」这一层。原因与替代方案：
+
+- **为什么删**：①宿主拒绝在会话跑过一轮后更换 agent 的 tools，所以只能在轮次开始后才回答的问题按构造就来得太晚；②实测弹窗一打开就会清空正在新建会话的工作区输入（答「关联」与「不关联」两种都复现）。
+- **替代**：composer 输入框左侧一个 TDB chip（宿主槽位 `conversation.input.left`，与模型选择器同一行）。展开面板可选 Team / Agent / Task，点「确定」只是 staged，**首轮**由 `resolveSilently` 落绑定；已绑定的会话 chip 降级为只读标签，`choose()` 直接忽略。
+- **无 preset 且候选有歧义、用户又没点 chip** ⇒ 写空三元组 `source='skipped'`（不替用户猜，也不注入团队资产）。
+- **顺序**（2026-11-22 复核修正）：staged chip 压过 `session_init` preset/bypass。旧顺序是先 preset、后 chip，于是账号一旦配了 `default_agent_id`，面板里的「本次不关联」永远走不到——而「有默认 agent 时仍允许显式不关联」正是那个面板存在的理由。`describe()` 同步：已 stage 时按 staged 的 team 列候选，且 preset 那行不再标 `locked`。
+- **未解析 ≠ 用户拒绝**：空三元组只有在 `associate:false` 时才读作「本次不关联」；`source ∈ {skipped, delegated, inherited}` 的空三元组是「还没解析成」，chip 保持可编辑（`isUnresolvedBinding`），`ensureBound` 在 `UNRESOLVED_RETRY_MIN_AGE_MS`（30s）后只对 `candidates failed:*` 重走一次。
+- **新增源码**：`src/identity-control.ts`（`GET /tdb-identity/state`、`POST /tdb-identity/choose`）；`src/session-identity.ts` 删掉 `ask` / `askAssetConfirm` / `resolveTask` / `resolveChoice` / `Question*` 类型 / `TEAM|AGENT|TASK|ASSET_CONFIRM` 常量。
+- **配置面**：`identity.askAtSessionStart` → `identity.enabled`；`askTimeoutMs` / `skipDefault` / `askForTask` 已删除（`followUserSessionInit` / `rememberSession` / `statePath` 保留）。
+- **活文档**：机制与现状见 `dsh-plugin/README.md` 的「身份第二条入口：输入框行的 TDB chip」一节。
+
+第 6.1 节的 `scratch/e2e5/` 证据目录仍然有效——它记录的是 v3 的真机读数，也是 v3 为何被撤掉的历史依据之一。
+
+## 9. D4 预答态 + B11 分支继承（2026-11-22，隔离宿主 3081 实测）
+
+### 9.1 为什么 preset 必须写成「预答」而不是判决
+
+`agent/created` 里写绑定，是为了让首轮 `pre-step` 之前的读取面不再用 config 三元组；但那时写下的行**同时被 `describe()` 当作已冻结**，chip 立刻降级成只读标签，B2/B4 要求的「本次不关联 / 换个 agent」在 UI 上就再也点不到。妥协点是给这行加 `unconfirmedAt`：
+
+- `submit(sessionId, binding, unconfirmed)` 多一个布尔，只有 preset / auto 两条静默路径置真；
+- `describe()` 在 `bound.unconfirmedAt !== undefined` 时输出 `editable: true`，client 据此渲染「… · 可改 ▾」；
+- 首轮 `pre-step` 的 `ensureBound` 先看 `staged`（用户点了 chip 就以 chip 为准），再 `confirmPendingRow()` 剥掉 `unconfirmedAt` 冻结；
+- `writebackPolicy` 对预答行返回 `defer`：首轮还没开始，替用户把他没确认过的身份写进 L0 没有依据；
+- `SessionIdentityStore.load()` 必须一起拷回 `unconfirmedAt`，否则重启会把预答静默升级成用户没做过的决定。
+
+实测（3081）：preset 会话首轮前 `GET /tdb-identity/state` 返回 `editable:true` + `bound` 带 `committedAt` 与 `unconfirmedAt`；点「本次不关联」→ 落 `source:'user-declined'` + `associate:false`（`session-130f1262` `committedAt 1795320777936`、`session-ffd9e1d5` `1795321165351`）；无人干预则首轮后 `unconfirmedAt` 消失、只剩 `committedAt`。
+
+### 9.2 分支继承走 plugin record，不走 header.parentSession
+
+UI 的「在新对话中分支」由 `dsh-api-session-controller/src/commands.ts` 的 `commands.fork` 实现，它调的 `ctx.agents.create({ …, meta: { cwd, isSeeded, agentPreset } })` **没有 `parentSession`**——能写这个字段的只有 `SessionStore.fork`（`dsh-session/lib/index.js:2006-2020`），UI 分支绕过了它。插件侧也补不上：header 由 `snapshotSessionHeader` 深拷贝（`:1415`），`agent/created` 在 `createStoredSession` 落盘之后才发，`agents.create` 的 options 里没有父 id。
+
+改用 `plugin:tdb-agemem/identity` 记录（`src/branch-identity.ts`）：父会话身份变化时往自己的 log 写一条（`appendPluginRecord` → `ignorable:true`，永不进模型可见面），fork seed 按引用复制前缀（`dsh-session/src/fork.ts`「a new array retaining the source event objects」），子会话在 `bindAtCreated` 里扫 `[0, inheritedEventCount)` 读到最近一条，取 `data.sessionId` 当父 id。
+
+实测（3081）：父 `session-3a367348` 落 `source:'chip'` 审墨 `agt-fa0u5mi7x4`、`committedAt 1795327843323`；点分支后子 `session-8d8f9676` 在 store 里是 `source:'inherited'` + `reason:'branch of session-3a367348-…'` + **同一个 `committedAt`**，全程无网络请求，首轮后 chip 只读。落盘实证：父 log `seq 31` 即该记录；子 `inheritedEventCount=60`，前缀里带着它。
+
+**残余边界（已与用户确认接受，不是 bug）**：若分支边界落在父会话第一条记录之前（实测 `session-5c65f1bf` 的 `boundary=27`，而父记录在 `seq 31`），seed 里没有任何身份可读，子会话退回按新会话解析；前缀比对同样无解（`seq 0..27` 与父、与中间子会话逐条哈希 27/27 全同）。有 preset 时结果一致，只在「无 preset + 沿用早期分支父身份」时多问一次。根治需上游补一行 `parentSession: source.header.id`。

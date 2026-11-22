@@ -30,8 +30,26 @@ const HEAL_PROBE_TIMEOUT_MS = 10_000;
  */
 export const SKIP_RETRY_MIN_AGE_MS = 2 * 60 * 1000;
 
+/**
+ * How long an unresolved session waits before retrying "candidates failed" on a
+ * later pre-step. The old behaviour froze the failure forever, so a 3-second
+ * core restart cost the whole conversation (and every fork of it) its identity:
+ * the chip kept saying 「未关联」 while the account DID have a preset.
+ */
+export const UNRESOLVED_RETRY_MIN_AGE_MS = 30 * 1000;
+
 /** pick() 写失败原因时加的前缀：reason 形如 'candidates failed: transport failure: fetch failed'。 */
 const CANDIDATES_FAILED_PREFIX = 'candidates failed: ';
+
+/**
+ * 这条 reason 是不是一次「候选拉取失败」——不论传输层还是 Core 拒绝。
+ * 两者都是**窗口性**的（网络抖动 / Core 在重启），Core 回来后重解就该成功；
+ * 与「没有团队」「有歧义且没用 chip」这种**确定性**结论必须区别对待：后者重解
+ * 一百次也是同一个结论，只会白打网络。
+ */
+export function isCandidatesFailure(reason: string | undefined): boolean {
+  return typeof reason === 'string' && reason.startsWith(CANDIDATES_FAILED_PREFIX);
+}
 
 /**
  * 这条 reason 是不是「候选拉取的传输层失败」——只有这两类才值得自愈重试。
@@ -68,87 +86,112 @@ export function isEmptyTriple(binding: { teamId: string; agentId: string; userId
 }
 
 /**
- * Session-start identity picker (task-117 v3).
+ * An empty triple that NOBODY chose: the account's candidates were unreachable
+ * (or ambiguous and the chip was never used), so the record means "not resolved
+ * yet", not "the user said 本次不关联". Only an explicit decline carries
+ * associate:false, and that one must keep reading as a decision.
+ */
+export function isUnresolvedBinding(binding: { source: string; associate?: boolean } & {
+  teamId: string; agentId: string; userId: string;
+}): boolean {
+  if (binding.associate === false) return false;
+  if (!isEmptyTriple(binding)) return false;
+  return binding.source === 'skipped' || binding.source === 'delegated' || binding.source === 'inherited';
+}
+
+/**
+ * An empty triple the SYSTEM wrote on the user's behalf, not one the user chose:
+ * the account was ambiguous and the chip was never touched (rule ⑤ -> 「本次不关联」),
+ * or a branch inherits a parent that had nothing to inherit.
  *
- * The remembered flow is the proxy's, not ours: at the START of a session the
- * user is asked which Team (and which Agent inside it) this conversation should
- * read and write. The old attempt -- a loopback HTTP API that the Settings page
- * called -- was the wrong seam: the host has a first-class way to ask a human
- * questions inside a live session, and it is ctx.userQuestions.ask.
+ * It reads like a decline -- writes skip, nothing lands in a guessed team -- but
+ * it must NOT freeze the session. Measured pain (2026-11-22 10:02, session
+ * 386626c4): the first turn stamped committedAt on this row, the chip turned into
+ * a read-only 「未关联」 label, and the user lost every way to say who this
+ * conversation belongs to -- for a decision nobody had made.
  *
- * Why this file exists at all:
+ * Freezing is about SPLITTING data (turn 1 in agent A, turn 10 in agent B). A row
+ * with no triple has written nothing, so a later real choice cannot split
+ * anything: it only starts writing.
+ */
+export function isProvisionalDecline(binding: { source: string; associate?: boolean } & {
+  teamId: string; agentId: string; userId: string;
+}): boolean {
+  if (binding.associate !== false) return false;
+  if (!isEmptyTriple(binding)) return false;
+  return binding.source === 'skipped' || binding.source === 'inherited';
+}
+
+/**
+ * Session identity: one silent resolution per session, decided in the COMPOSER.
  *
- *  1. The plugin resolves ONE identity at mount from server.userKey. That is
- *     right for a single-tenant profile and wrong for the proxy's UX, where the
- *     user may belong to several teams and picks per session.
- *  2. 'agent/pre-step' is the only seam that runs while a human is watching and
- *     a turn is open, so it is where the card is shown. The host renders it in
- *     the conversation; the answer arrives as
- *     answers: [{ id: 'team_select', selected: ['<label>'] }].
+ * The remembered flow is the proxy's: a conversation reads and writes inside one
+ * Team (and one Agent inside it). The first port of that idea -- a userQuestions
+ * card popped by 'agent/pre-step' -- turned out to be the wrong seam for this
+ * host. The host refuses to swap an agent's tools after a turn has run, so a
+ * question that can only be answered while a turn is open arrives too late by
+ * construction; and answering it used to wipe the workspace of the session that
+ * was being started.
  *
- * WHERE the answer comes from is the proxy's business, not ours: before the
- * first card of a session the plugin reads the SAME per-user `session_init`
- * config the proxy reads (memory-client.getUserSessionInit, decision table in
- * ./user-session-init.ts). preset -> bind silently, bypass -> associate nothing,
- * ask -> show the card. The card is therefore NOT a function of how many
- * candidates exist: one team and one agent still get asked when the user's
- * config says ask (a live profile once relied on the opposite and was wrong).
- * Only AFTER "yes" may the fold happen: one team needs no team question, one
- * agent needs no agent question.
+ * So the choice moved to where the host itself keeps a per-conversation choice:
+ * the composer tool row, next to the model picker. A chip there opens one panel
+ * (Team / Agent / Task) and STAGES a choice; the first turn of that session
+ * turns the staging into the binding. From then on the chip is a read-only
+ * label -- the same rule the host applies to its own agent preset.
+ *
+ * Where a binding comes from, in order:
+ *
+ *  0. Written ONCE and never again (I1/I2): the first submit stamps
+ *     committedAt, and from then on the row is read-only -- the chip renders as
+ *     a label, choose refuses, and every heal short-circuits. A conversation
+ *     whose identity could still move would write turn 1 into one agent library
+ *     and turn 10 into another.
+ *
+ *  1. The chip: whatever the user staged before the first turn. An explicit
+ *     click in THIS session outranks the account default below -- otherwise the
+ *     panel 本次不关联 could never be reached once a preset agent exists,
+ *     which is exactly the case the panel fixes that button for.
+ *  2. A preset in the user's per-user `session_init` config (the proxy's
+ *     manual_select=0 path): bind silently. Its default_agent_id is shown in the
+ *     panel but is never selectable -- the user asked for exactly that.
+ *  3. Nothing to ask: one team and one agent (or the configured triple).
+ *  4. "本次不关联": the explicit empty triple -- the panel's own button, a
+ *     session_init bypass, or an ambiguous account whose chip was never touched.
  *
  * Four rules, each the result of a measured host behaviour:
  *
- *  - NEVER block a turn. The ask is raced against askTimeoutMs; every failure
- *    (no service, abort, timeout, no candidates) resolves instead of rejecting,
- *    and the turn continues on the configured triple.
- *  - NEVER pop twice. A binding is written for the session (memory + optional
- *    state file) before the handler returns, and concurrent pre-steps of the
- *    same session await the SAME in-flight promise -- a first turn with tool
- *    calls runs pre-step several times, and that used to be several cards.
- *  - NEVER pop at a machine. An owned child agent has no human answerer (the
- *    host throws DELEGATED_CALLER, "would block forever"), and a headless
- *    composition has no credentials store, so no user key: both take the silent
- *    path, with no warn (a sub-agent hits it every turn).
+ *  - NEVER block a turn. Resolution is bounded by the metadata budget; every
+ *    failure (no key, no candidates, transport error) resolves instead of
+ *    rejecting, and the turn continues.
+ *  - NEVER resolve twice. A binding is written for the session (memory +
+ *    optional state file) before the handler returns, and concurrent pre-steps
+ *    of the same session await the SAME in-flight promise.
+ *  - NEVER ask a machine. A headless composition has no user key: it takes the
+ *    silent path with no warn. There is no question service in this file.
+ *  - NEVER resolve in a branch. A fork shares its parent's history, so it
+ *    inherits its parent's identity; a new persona means a new session.
  */
-
-/** Question ids are fixed: the proxy's form uses the same three. */
-export const TEAM_QUESTION_ID = 'team_select';
-export const AGENT_QUESTION_ID = 'agent_select';
-/** The proxy's THIRD stage (form.ts:252-274): which work item this session is for. */
-export const TASK_QUESTION_ID = 'task_select';
-/**
- * The proxy's virtual "default task" (form.ts:254-259), unshifted ahead of the
- * real tasks. Selecting it means NO task scope -- it must never be read as
- * "skip the whole association", because team/agent were already answered.
- */
-export const TASK_NO_TASK_LABEL = '本次不关联任务';
-
-/** Verbatim from MemoryProxy/src/session/dsh/form.ts (SKIP_LABEL / SKIP_HINT). */
-export const SKIP_LABEL = '本次不关联(跳过注入,直接放行)';
-export const SKIP_HINT = '（如选择"跳过"选项，本次 session init 将跳过，不注入任何团队资产）';
-
-/**
- * The proxy's asset_confirm question, verbatim (form.ts:115-117): it is asked
- * BEFORE team/agent whenever the user's config says ask, and only its "yes"
- * unlocks the candidate list.
- */
-export const ASSET_CONFIRM_QUESTION_ID = 'asset_confirm';
-export const ASSET_CONFIRM_YES = '是，关联团队资产';
-export const ASSET_CONFIRM_NO = '否，本次不关联';
-export const ASSET_CONFIRM_TITLE = '会话初始化 — 是否关联团队资产';
 
 /** Where a session's identity came from; also the store's audit field. */
 export type IdentitySource =
   | 'userkey'
-  /** Bound silently from the user's session_init preset (no card). */
+  /** Bound silently from the user's session_init preset. */
   | 'user-preset'
-  /** The user's session_init says default_associate=0: associate nothing. */
+  /** session_init says default_associate=0: associate nothing. */
   | 'user-bypass'
   /**
-   * 用户在会话开始的那张卡上选了「否，本次不关联」。与 user-bypass 的区别只在归因：
-   * 一个是配置，一个是本次会话的当场决定；两者都写空三元组、都不注入。
+   * 用户按了 chip 面板的「本次不关联」。与 user-bypass 的区别只在归因：一个是
+   * 账号配置，一个是本次会话的当场决定；两者都写空三元组、都不注入。
    */
   | 'user-declined'
+  /** Resolved with no interaction: one team/agent, or the configured triple. */
+  | 'auto'
+  /** Chosen by the user in the composer chip, committed on the first turn. */
+  | 'chip'
+  /**
+   * Legacy：会话开始弹窗路径写下的值。新代码不再产生它，但旧状态文件里还有，
+   * previouslyChosenTriple 仍把它当成「用户亲手选过」。
+   */
   | 'picked'
   /** 分支（fork/压缩）从父会话继承的身份：同一段对话，同一套三元组。 */
   | 'inherited'
@@ -160,6 +203,9 @@ export type IdentitySource =
    */
   | 'recovered'
   | 'delegated';
+
+/** The panel's virtual "default task": no task scope, never "skip everything". */
+export const NO_TASK_LABEL = '本次不关联任务';
 
 export interface SessionBinding {
   teamId: string;
@@ -198,36 +244,46 @@ export interface SessionBinding {
   lastHealProbe?: string;
   /** Epoch ms. */
   at: number;
+  /**
+   * When this identity became FINAL (I1). Present = frozen: `ensureBound` writes
+   * nothing more for the session and the heals are short-circuited, so the agent
+   * that answered turn 1 is the agent that answers turn 10. Absent only on
+   * records written by an older build, which still get one P0-2 heal.
+   */
+  committedAt?: number;
+  /**
+   * Epoch ms the row was written BEFORE the conversation ran a turn.
+   *
+   * A row created at `agent/created` is a PRE-ANSWER: it freezes the identity
+   * that turn 1 will use, but the user has not said anything yet. Two such rows
+   * must still be their choice, because the question they answer ("which agent
+   * does this conversation belong to") is exactly the one the composer chip
+   * asks -- and answering it by pressing 发送 is not an answer:
+   *   - 「有默认 agent 时仍允许本次不关联」(rule ②): the preset freezes at
+   *     creation, so without this the panel入口 would never open (2026-11-22
+   *     11:56 现场 session-7ce40b5d: chip was a bare StaticText the moment the
+   *     conversation existed, and 本次不关联 was unreachable);
+   *   - D4: the chip shows 「待生效」 until the first POST has an identity, so
+   *     the first turn's writeback must be HELD, not sent under the preset the
+   *     user was about to change (2026-11-22 12:04 现场).
+   * Cleared by the first `agent/pre-step` (see confirmPendingRow): from then on
+   * the row is frozen like any other committed one.
+   */
+  unconfirmedAt?: number;
+  /**
+   * I3: the display label captured WHEN the binding was made ("青禾 (8k22f496)").
+   *
+   * The chip is a read-only label after the first turn, so it needs the name for
+   * as long as the conversation lives -- but the name only comes back from a
+   * candidates read, and that read can be slow or down for the rest of the
+   * session. Measured 2026-11-22 11:34 (session dceb0a9e): core timed out on one
+   * describe call and the chip fell back to rendering the raw id
+   * 「TDB 记忆 · agt-3i8k22f496」-- true, ugly, and unfixable from the client
+   * because the store never kept the name.
+   */
+  agentLabel?: string;
 }
 
-/** One card option. id is NOT sent to the host -- it is our label -> id map. */
-export interface QuestionOption {
-  label: string;
-  description?: string;
-}
-
-export interface QuestionSpec {
-  id: string;
-  header?: string;
-  question: string;
-  options: QuestionOption[];
-  multiSelect?: boolean;
-}
-
-export interface QuestionAnswer {
-  id?: string;
-  selected?: string[];
-  custom?: string;
-}
-
-/** The host service, structurally (verified against dsh-user-questions). */
-export interface UserQuestionsLike {
-  ask(request: {
-    agent?: unknown;
-    questions: QuestionSpec[];
-    signal?: AbortSignal;
-  }): Promise<{ answers?: QuestionAnswer[] } | undefined>;
-}
 
 export interface TeamChoice {
   teamId: string;
@@ -252,18 +308,25 @@ export type CandidatesResult =
   | { kind: 'failed'; reason: string };
 
 export interface SessionIdentitySettings {
-  /** Master switch: false = never read the user config, never show a card. */
-  askAtSessionStart: boolean;
-  /** Honour the per-user session_init config (preset/bypass/ask), like the proxy. */
+  /**
+   * Master switch: false = never resolve, never fetch candidates; the configured
+   * three ids are used as-is. For headless compositions that want zero network.
+   */
+  enabled: boolean;
+  /**
+   * Honour the per-user `session_init` config (manual_select / default_associate
+   * / default_team_id / default_agent_id), like the proxy.
+   *
+   * true（缺省）：preset 静默绑定 / bypass 不关联；false：跳过读配置，一律走
+   * chip 与无歧义兜底。
+   */
   followUserSessionInit: boolean;
-  askTimeoutMs: number;
+  /** 绑定写状态文件：重启后同 session 不再解析。false = 只记内存。 */
   rememberSession: boolean;
-  skipDefault: boolean;
-  /** Ask the task (work item) question after team/agent; false = never send x-tdai-task-id. */
-  askForTask: boolean;
-  /** '' -> no file (memory only); otherwise the JSON state path. */
+  /** '' -> 由 outbox 目录推导；否则就是这个 JSON 状态文件的绝对路径。 */
   statePath: string;
 }
+
 
 /** Bounded state file: one entry per live session, evicted oldest first. */
 const MAX_STORED_SESSIONS = 200;
@@ -343,6 +406,22 @@ export class SessionIdentityStore {
           ...(typeof (binding as { lastHealAt?: unknown }).lastHealAt === 'number' ? { lastHealAt: binding.lastHealAt } : {}),
           ...(typeof (binding as { lastHealProbe?: unknown }).lastHealProbe === 'string' ? { lastHealProbe: binding.lastHealProbe } : {}),
           at: typeof binding.at === 'number' && Number.isFinite(binding.at) ? binding.at : 0,
+          // I1 must survive a restart. Without this the freeze flag is lost on
+          // every process start, and a bound conversation quietly becomes
+          // editable again -- the exact hole that lets turn 10 land in a
+          // different agent's library than turn 1.
+          // Same reason as committedAt: an offered-but-unconfirmed row must still
+          // be editable after a restart, otherwise a process restart silently
+          // turns the preset into a decision the user never made.
+          ...(typeof (binding as { unconfirmedAt?: unknown }).unconfirmedAt === 'number'
+            && Number.isFinite(binding.unconfirmedAt)
+            ? { unconfirmedAt: binding.unconfirmedAt }
+            : {}),
+          ...(typeof (binding as { committedAt?: unknown }).committedAt === 'number'
+            && Number.isFinite(binding.committedAt) ? { committedAt: binding.committedAt } : {}),
+          ...(typeof (binding as { agentLabel?: unknown }).agentLabel === 'string'
+            && (binding as { agentLabel: string }).agentLabel.trim() !== ''
+            ? { agentLabel: (binding as { agentLabel: string }).agentLabel } : {}),
         });
       }
       return true;
@@ -376,21 +455,15 @@ export class SessionIdentityStore {
 
 export interface SessionIdentityDeps {
   settings: SessionIdentitySettings;
-  /** The configured triple (the fallback when a session is unbound). */
+  /** The three ids to fall back on (config, or the mount-time userKey resolution). */
   base: MemoryIdentity;
-  /** The user key, resolved lazily (credentials ref or env; may be absent). */
+  /** The account's user key: undefined = headless (no candidates, no chip). */
   resolveUserKey: () => Promise<string | undefined>;
-  /** verify -> teams -> agents, optionally scoped to one team. */
+  /** Teams, and (given one team) its agents and tasks. Never throws. */
   candidates: (input: { userKey: string; teamId?: string; timeoutMs?: number }) => Promise<CandidatesResult>;
-  /**
-   * The user's `session_init` config (`{ param_name: effective_value }`), or
-   * null when it cannot be read. Optional: a composition/tests that omit it
-   * behave exactly like a read failure, i.e. ask.
-   */
+  /** Per-user `session_init` config reader; absent = always the chip path. */
   getUserSessionInit?: (input: { userKey: string; userId: string; timeoutMs?: number }) => Promise<Record<string, string> | null>;
   store: SessionIdentityStore;
-  /** The host's question service, looked up per call (it is a sibling entry). */
-  getQuestions: () => UserQuestionsLike | undefined;
   /** Per metadata-call budget. */
   timeoutMs: number;
   log?: LoggerLike;
@@ -398,34 +471,114 @@ export interface SessionIdentityDeps {
   onSessionSeen?: (sessionId: string) => void;
   /** Called when a session gets bound, so a frozen head pack can refetch. */
   onBound?: (sessionId: string, binding: SessionBinding) => void;
+  /**
+   * B11：这个会话是不是从别的会话分支出来的，父会话 id 是谁。
+   *
+   * 宿主 UI 的「在新对话中分支」**不写** `header.parentSession`（2026-11-22 实测
+   * projcache 零命中），所以父关系由插件自己记进父会话 log 的 plugin record，
+   * 由 index.ts 在 `agent/created` 解析后同步填进这张表。返回 undefined 就是
+   * 「不是分支，或还没解析出来」—— 两者都退回按新会话解析。
+   */
+  knownBranchParent?: (agent: unknown) => string | undefined;
   now?: () => number;
 }
 
+/**
+ * One committed choice: the triple plus the optional task scope.
+ *
+ * `associate === false` 是面板的「本次不关联」：空三元组会让
+ * memory-client.missingIdentity() 对每次调用都报 'teamId'，于是 volatile、
+ * head-pack、recall、writeback 全部跳过，而不是悄悄读写「配置的」那个 team 池。
+ */
+export interface IdentityChoice {
+  teamId: string;
+  agentId: string;
+  taskId?: string;
+  associate?: boolean;
+}
+
+/** One row of the chip's panel: the id is never shown, only the label is. */
+export interface ComposerOption {
+  id: string;
+  label: string;
+  detail?: string;
+  /** Present only for the preset agent: rendered, never selectable. */
+  locked?: boolean;
+}
+
+/** Everything the composer chip needs to paint its panel (one round trip). */
+export interface ComposerState {
+  /** 'inert' = no user key; 'failed' = candidates unreachable. */
+  status: 'ok' | 'inert' | 'failed';
+  reason?: string;
+  /** Present once the session is bound: from then on the chip is read-only. */
+  bound?: SessionBinding;
+  /** The staged (not yet committed) choice, if the user already pressed 确定. */
+  staged?: IdentityChoice;
+  /**
+   * True when the session already has a record but that record is an empty
+   * triple nobody chose (a candidates failure, or "ambiguous and the chip was
+   * never used"). The chip stays editable in that state: showing 「未关联」 for
+   * a user who HAS a preset was a lie, and it locked the correction out.
+   */
+  unresolved?: boolean;
+  /**
+   * A committed row that is still a PRE-ANSWER: `unconfirmedAt` is set, i.e.
+   * the identity was picked at creation and not one turn has run under it. The
+   * chip stays clickable in that state (rule ②, see SessionBinding.unconfirmedAt)
+   * and marks itself 「待生效」 so nobody mistakes it for an applied setting.
+   */
+  editable?: boolean;
+  /** The team whose agents/tasks are listed below ('' = account has several). */
+  teamId: string;
+  teams: ComposerOption[];
+  agents: ComposerOption[];
+  tasks: ComposerOption[];
+}
+
 export interface SessionIdentity {
-  /** The ready line's field: on | off(config) | inert(no key) ... */
+  /** The ready line's field: on(chip) | off(config) | inert(no key) ... */
   status(): string;
   /** Idempotent, bounded, never throws; the volatile block calls it too. */
   ensureBound(agent: unknown, signal?: unknown): Promise<void>;
+  /** The composer chip asks for this session's candidate lists (read-only). */
+  /**
+   * What a writeback queued for this session should do RIGHT NOW (I4):
+   *
+   *  - 'send'     -- it has an identity, send it.
+   *  - 'skip'     -- the user declined (associate:false). No identity is coming,
+   *                  so the write would never succeed; drop it silently.
+   *  - 'defer'    -- no binding at all: the session simply has not been resolved
+   *                  yet. Hold the write and flush it the moment onBound fires.
+   *
+   * The distinction is the whole point of D4: before this, 'defer' and 'skip'
+   * were both reported as 'identity missing', so a conversation that started while
+   * the core was down lost every turn to the dead-letter file.
+   */
+  writebackPolicy(sessionId: string): 'send' | 'skip' | 'defer';
+  describe(sessionId: string, teamId?: string): Promise<ComposerState>;
+  /**
+   * The composer chip committed a choice (staged until the first turn runs).
+   * Returns false when the session is already committed: the chip is a label at
+   * that point, and a refused click that answers 200 while changing nothing is
+   * the worst kind of silent failure.
+   */
+  choose(sessionId: string, choice: IdentityChoice): boolean;
   dispose(): void;
 }
 
-/** A label -> id pair: the host only ever echoes the label back. */
-interface Choice {
-  label: string;
-  id: string;
-}
-
-function labelOf(name: string | undefined, id: string): string {
-  const base = name !== undefined && name.trim() !== '' ? name.trim() : id;
+/**
+ * What a panel row shows: the human name, then the last 8 chars of the id.
+ *
+ * The full id is noise in a dropdown, but the tail is what disambiguates two
+ * same-named teams or agents, so it is kept in parentheses.
+ */
+export function labelOf(name: string | undefined, id: string): string {
+  const base = (name ?? '').trim();
+  if (base === '') return id;
   return base + ' (' + id.slice(-8) + ')';
 }
 
-/**
- * Skip detection: the selected label, a free-text answer, or a synonym.
- *
- * CJK phrases match ANYWHERE in the box ('本次跳过' is what a human types),
- * while the ASCII 'skip' keeps a word boundary so 'skipper' stays a name.
- */
 /**
  * Round26（r26e-a1）：清卡归因。declined=用户明确选了「本次不关联」；
  * unconfigured=会话没有可用身份（配置缺口，不是用户的决定）。
@@ -441,49 +594,9 @@ export type CardClearedSource = 'declined' | 'unconfigured';
 export function cardClearedSource(bound: { associate?: boolean } | undefined): CardClearedSource {
   return bound !== undefined && bound.associate === false ? 'declined' : 'unconfigured';
 }
-
-export function isSkipAnswer(text: string): boolean {
-  const value = text.trim();
-  if (value === '') return false;
-  if (value === SKIP_LABEL) return true;
-  if (/(跳过|不关联|不注入)/.test(value)) return true;
-  return /(^|[^a-z])skip([^a-z]|$)/i.test(value);
-}
-
-function skipped(reason: string): { kind: 'skipped'; reason: string } {
-  return { kind: 'skipped', reason };
-}
-
-/** Resolve one answered question to the chosen id (or skip). */
-function resolveChoice(
-  answers: QuestionAnswer[] | undefined,
-  questionId: string,
-  choices: Choice[],
-): { kind: 'picked'; id: string } | { kind: 'skipped'; reason: string } {
-  if (!Array.isArray(answers)) return skipped('no answer');
-  const answer = answers.find((entry) => entry !== undefined && entry !== null && entry.id === questionId);
-  if (answer === undefined) return skipped('answer for ' + questionId + ' missing');
-  const labels = Array.isArray(answer.selected) ? answer.selected.filter((item) => typeof item === 'string') : [];
-  const custom = typeof answer.custom === 'string' ? answer.custom : '';
-  if (labels.length === 0 && custom.trim() === '') return skipped('empty answer');
-  for (const label of labels) {
-    if (isSkipAnswer(label)) return skipped('user chose to skip');
-  }
-  if (isSkipAnswer(custom)) return skipped('user typed a skip phrase');
-  const wanted = (labels[0] ?? custom).trim();
-  const exact = choices.find((choice) => choice.label === wanted);
-  if (exact !== undefined) return { kind: 'picked', id: exact.id };
-  const contains = choices.find((choice) => wanted !== '' && (choice.label.includes(wanted) || wanted.includes(choice.label)));
-  if (contains !== undefined) return { kind: 'picked', id: contains.id };
-  // Last resort: the user pasted the id (or its last 8 characters).
-  const byId = choices.find((choice) => wanted !== '' && (choice.id === wanted || choice.id.endsWith(wanted)));
-  if (byId !== undefined) return { kind: 'picked', id: byId.id };
-  return skipped('answer did not match any option');
-}
-
 /**
- * Install the session-start card. The listener is prepended so it runs before
- * the volatile block and before every other consumer of the identity reads it.
+ * Install the silent resolver. The listener is prepended so it runs before the
+ * volatile block and before every other consumer of the identity reads it.
  */
 export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentityDeps): SessionIdentity {
   const settings = deps.settings;
@@ -492,10 +605,31 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
   const inFlight = new Map<string, Promise<void>>();
   /** sessionId -> the P0-2 self-heal already running (one candidates probe per session). */
   const healInFlight = new Map<string, Promise<void>>();
-  let warnedDelegated = false;
-  let warnedNoService = false;
+  /** sessionId -> the composer chip's committed-but-not-yet-bound choice. */
+  const staged = new Map<string, IdentityChoice>();
+  /**
+   * sessionId -> earliest time a transient failure may be retried (D3/I4).
+   *
+   * A transport failure writes NOTHING to the store: a persisted row that says
+   * skipped is indistinguishable from a decision, survives restarts, and (before
+   * this) locked the whole session -- and every branch of it -- out of its
+   * identity for good after a 3-second core hiccup. Absence of a row is the
+   * honest representation of "not resolved yet"; this map only stops the same
+   * turn from re-probing per step.
+   */
+  const retryAfter = new Map<string, number>();
+  /**
+   * agentId -> display label, learned from any candidates read. `submit` copies
+   * the label into the row (I3) so a later describe() can still name the agent
+   * after core stops answering; without this the chip degrades to a raw id.
+   */
+  const agentLabels = new Map<string, string>();
+  const rememberAgentLabels = (agents: AgentChoice[] | undefined): void => {
+    if (agents === undefined) return;
+    for (const agent of agents) agentLabels.set(agent.agentId, labelOf(agent.name, agent.agentId));
+  };
   let warnedPresetMismatch = false;
-  let statusLabel = settings.askAtSessionStart ? 'on' : 'off(config)';
+  let statusLabel = settings.enabled ? 'on(chip)' : 'off(config)';
 
   const debug = (...args: unknown[]): void => deps.log?.debug?.(...args);
 
@@ -509,8 +643,23 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
   });
 
   /** The ONE place a binding is written: store, status line, head-pack refresh. */
-  const submit = (sessionId: string, binding: SessionBinding): void => {
-    deps.store.set(sessionId, binding);
+  const submit = (sessionId: string, binding: SessionBinding, unconfirmed = false): void => {
+    // I1: every write through this door is FINAL. `committedAt` is the flag the
+    // rest of the file reads. Measured pain: a 30s self-heal window used to swap
+    // the identity of a conversation that had already written turns under the
+    // old one, because "not resolved" and "resolved" looked the same in the
+    // store.
+    // I3: freeze the display label with the binding. A read-only chip must be
+    // able to say 「青禾 (8k22f496)」without a candidates round trip.
+    const knownLabel = binding.agentId === '' ? undefined : agentLabels.get(binding.agentId);
+    const row: SessionBinding = {
+      ...binding,
+      ...(binding.agentLabel === undefined && knownLabel !== undefined ? { agentLabel: knownLabel } : {}),
+      committedAt: binding.committedAt ?? now(),
+      ...(unconfirmed ? { unconfirmedAt: now() } : {}),
+    };
+    deps.store.set(sessionId, row);
+    retryAfter.delete(sessionId);
     statusLabel = 'bound(' + binding.source + ')';
     debug('agemem: session identity bound', {
       sessionId,
@@ -521,15 +670,52 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
       reason: binding.reason,
     });
     try {
-      deps.onBound?.(sessionId, binding);
+      deps.onBound?.(sessionId, row);
     } catch {
       // A refresh callback must never break the turn it was called from.
     }
   };
 
+  /**
+   * Turn 1 is about to run: whatever the creation-time rows said, this session
+   * now writes under its identity, so the window for changing it closes.
+   *
+   * Called on EVERY pre-step (idempotent, two store reads at most): the row is
+   * at most one step old, so "the turn that is about to speak" is the right
+   * moment. The chip's own click (choose) is the only way in before this, and
+   * the freeze afterwards is exactly I1.
+   */
+  const confirmPendingRow = (sessionId: string): void => {
+    const row = deps.store.get(sessionId);
+    if (row === undefined || row.unconfirmedAt === undefined) return;
+    const { unconfirmedAt: offeredAt, ...confirmed } = row;
+    deps.store.set(sessionId, confirmed);
+    // A held write was waiting for exactly this: the identity is now real, so
+    // the deferred hold can be released on the same step.
+    retryAfter.delete(sessionId);
+    debug('agemem: session identity confirmed by its first turn', {
+      sessionId,
+      source: row.source,
+      openForMs: now() - offeredAt,
+    });
+  };
+
   /** Fall back to the configured triple (no card answer, or a failure). */
   const bindSkipped = (sessionId: string, reason: string, source: IdentitySource = 'skipped'): void => {
     submit(sessionId, bindingFor(source, reason));
+  };
+
+  /**
+   * A failure that says NOTHING about the identity (core unreachable, candidates
+   * timed out). Writes no row: the session stays unresolved, the chip stays
+   * editable, and the next turn past the backoff resolves it for real. This is
+   * the D3/I4 split -- "we could not ask" must never be stored as "the user said
+   * no", because a stored no is permanent.
+   */
+  const noteUnresolved = (sessionId: string, reason: string): void => {
+    retryAfter.set(sessionId, now() + UNRESOLVED_RETRY_MIN_AGE_MS);
+    statusLabel = 'unresolved(' + reason + ')';
+    debug('agemem: session identity left unresolved', { sessionId, reason });
   };
 
   /**
@@ -542,63 +728,21 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
    * exactly what "本次不关联" and `default_associate=0` mean.
    */
   const bindNothing = (sessionId: string, source: IdentitySource, reason: string): void => {
-    submit(sessionId, { teamId: '', agentId: '', userId: '', source, reason, associate: false, at: now() });
-  };
-
-  const ask = async (
-    questions: QuestionSpec[],
-    agent: unknown,
-    signal: unknown,
-  ): Promise<{ kind: 'answers'; answers: QuestionAnswer[] | undefined } | { kind: 'skipped'; reason: string }> => {
-    const service = deps.getQuestions();
-    if (service === undefined) {
-      if (!warnedNoService) {
-        warnedNoService = true;
-        deps.log?.warn?.(
-          'agemem: the host has no userQuestions service in this composition; '
-          + 'the session-start Team picker is unavailable, using the configured identity',
-        );
-      }
-      return skipped('no userQuestions service');
+    const row = { teamId: '', agentId: '', userId: '', source, reason, associate: false, at: now() };
+    // Who did the declining decides whether it is final:
+    //  - the user (chip 本次不关联 / session_init default_associate=0) -> frozen;
+    //  - the SYSTEM on an ambiguous account (rule ⑤) or a branch -> provisional,
+    //    no committedAt, so the chip stays editable and a later pick can commit
+    //    (see isProvisionalDecline for why that cannot split an identity).
+    if (source === 'user-declined' || source === 'user-bypass') {
+      submit(sessionId, row);
+      return;
     }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), Math.max(1, settings.askTimeoutMs));
-    const unref = (timer as unknown as { unref?: () => void }).unref;
-    if (typeof unref === 'function') unref.call(timer);
-    const upstream = signal as {
-      aborted?: boolean;
-      addEventListener?: (name: string, listener: () => void) => void;
-      removeEventListener?: (name: string, listener: () => void) => void;
-    } | undefined;
-    const onAbort = (): void => controller.abort();
-    if (upstream?.aborted === true) controller.abort();
-    upstream?.addEventListener?.('abort', onAbort);
-    try {
-      const reply = await service.ask({ agent, questions, signal: controller.signal });
-      return { kind: 'answers', answers: Array.isArray(reply?.answers) ? reply.answers : undefined };
-    } catch (error) {
-      const record = error as { code?: unknown; name?: unknown; message?: unknown } | undefined;
-      const text = [record?.code, record?.name, record?.message]
-        .filter((part) => part !== undefined && part !== null)
-        .map(String)
-        .join(' ');
-      // An owned child has no human answerer: the host refuses the ask outright.
-      // Silent by design -- a sub-agent would otherwise warn on every turn.
-      if (/DELEGATED_CALLER|no human answerer/i.test(text)) {
-        if (!warnedDelegated) {
-          warnedDelegated = true;
-          debug('agemem: session identity picker skipped, the caller is a delegated agent');
-        }
-        return skipped('delegated caller');
-      }
-      debug('agemem: session identity question failed', text);
-      return skipped('ask failed' + (text === '' ? '' : ': ' + text));
-    } finally {
-      clearTimeout(timer);
-      upstream?.removeEventListener?.('abort', onAbort);
-    }
+    deps.store.set(sessionId, row);
+    retryAfter.delete(sessionId);
+    statusLabel = 'provisional(' + source + ')';
+    debug('agemem: session identity declined on behalf of the user (not final)', { sessionId, source, reason });
   };
-
   /**
    * The user-level session_init decision, read ONCE per session (the binding is
    * written by the caller, and ensureBound short-circuits on it).
@@ -627,15 +771,16 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     warnedPresetMismatch = true;
     deps.log?.warn?.(
       'agemem: the user session_init preset does not match this account (' + detail + '); '
-      + 'falling back to the session-start card',
+      + 'falling back to the composer chip',
     );
   };
 
   /**
    * Validate the preset against the account's REAL teams/agents before binding:
    * a stale default_team_id would otherwise address someone else's pool, which
-   * is worse than one extra card. The proxy validates the same way
-   * (resolvePresetIdentity) and falls through to the form on a mismatch.
+   * is worse than no preset at all. The proxy validated the same way
+   * (resolvePresetIdentity) and fell through to the form on a mismatch; here it
+   * falls through to the chip / auto path.
    */
   const resolvePreset = async (
     decision: Extract<UserInitDecision, { kind: 'preset' }>,
@@ -670,90 +815,6 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     }
     return { teamId: team.teamId, agentId: agents[0].agentId };
   };
-
-  /**
-   * The proxy's asset_confirm question (form.ts:192-201), asked unconditionally
-   * on the ask path -- the candidate count never decides it.
-   */
-  const askAssetConfirm = async (
-    agent: unknown,
-    signal: unknown,
-  ): Promise<{ kind: 'yes' } | { kind: 'no'; reason: string } | { kind: 'failed'; reason: string }> => {
-    const asked = await ask([{
-      id: ASSET_CONFIRM_QUESTION_ID,
-      header: '关联资产',
-      // No SKIP_HINT here: this card has no "跳过" OPTION (only the host's skip
-      // button), and the two options below already state the consequence. The
-      // proxy's hint is kept on the team/agent questions, where it is accurate.
-      question: '请确认本次对话是否要关联团队资产？',
-      options: [
-        { label: ASSET_CONFIRM_YES, description: '选择 Team / Agent / Task，注入团队上下文' },
-        { label: ASSET_CONFIRM_NO, description: '本次不注入任何内容，直接放行' },
-      ],
-      multiSelect: false,
-    }], agent, signal);
-    if (asked.kind !== 'answers') return { kind: 'failed', reason: asked.reason };
-    const answers = asked.answers;
-    const answer = Array.isArray(answers)
-      ? answers.find((entry) => entry !== undefined && entry !== null && entry.id === ASSET_CONFIRM_QUESTION_ID)
-      : undefined;
-    const labels = Array.isArray(answer?.selected) ? answer.selected.filter((entry) => typeof entry === 'string') : [];
-    const custom = typeof answer?.custom === 'string' ? answer.custom : '';
-    const wanted = (labels[0] ?? custom).trim();
-    // No usable answer is a FAILURE, not a "no": it falls back to the configured
-    // triple like a timeout does, instead of silently dropping team context.
-    if (wanted === '') return { kind: 'failed', reason: 'empty answer' };
-    if (wanted === ASSET_CONFIRM_YES) return { kind: 'yes' };
-    if (wanted === ASSET_CONFIRM_NO) return { kind: 'no', reason: 'user chose 否，本次不关联' };
-    if (/^(是|y|yes|关联|associate)/i.test(wanted)) return { kind: 'yes' };
-    if (isSkipAnswer(wanted)) return { kind: 'no', reason: 'user chose not to associate' };
-    // Anything unrecognised must NOT bind a team the user never confirmed.
-    return { kind: 'no', reason: 'answer did not match an option' };
-  };
-
-  /**
-   * The proxy's THIRD stage (form.ts:252-274): Task / work item.
-   *
-   * An OPTIONAL scope axis, so every failure mode below degrades to "no task":
-   * it must never sink an association the user already answered for team + agent.
-   * Shared by the ask path AND the preset path -- a preset fixes team/agent but
-   * the work item is per session, so it still gets this one card when the team
-   * actually has running work items (and stays silent when it has none).
-   */
-  const resolveTask = async (
-    team: { teamId: string; name?: string },
-    known: TaskChoice[],
-    userKey: string,
-    agent: unknown,
-    signal: unknown,
-  ): Promise<string | undefined> => {
-    if (!settings.askForTask) return undefined;
-    let tasks = known;
-    if (tasks.length === 0 && team.teamId !== '') {
-      const scoped = await deps.candidates({ userKey, teamId: team.teamId, timeoutMs: deps.timeoutMs });
-      if (scoped.kind === 'ok') tasks = scoped.tasks ?? [];
-    }
-    if (tasks.length === 0) return undefined;
-    // The proxy unshifted a virtual "default task" and treated it as "no task
-    // for this session"; the same option is first here, always, so ignoring the
-    // card can never silently attach a work item.
-    const choices: Choice[] = [
-      { label: TASK_NO_TASK_LABEL, id: '' },
-      ...tasks.map((entry) => ({ label: labelOf(entry.title, entry.taskId), id: entry.taskId })),
-    ];
-    const asked = await ask([{
-      id: TASK_QUESTION_ID,
-      header: 'TDB 记忆',
-      question: '「' + (team.name ?? team.teamId) + '」下本次会话关联哪个工作项（Task）？选「' + TASK_NO_TASK_LABEL + '」= 不按任务收窄: ' + SKIP_HINT,
-      options: choices.map((choice) => ({ label: choice.label })),
-      multiSelect: false,
-    }], agent, signal);
-    if (asked.kind !== 'answers') return undefined;
-    const pickedTask = resolveChoice(asked.answers, TASK_QUESTION_ID, choices);
-    // '' is the explicit "no task" option; a skip answer means the same.
-    return pickedTask.kind === 'picked' && pickedTask.id !== '' ? pickedTask.id : undefined;
-  };
-
   /**
    * Candidates, with ONE bounded retry for a transient transport failure.
    *
@@ -823,7 +884,11 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     const seen = new Map<string, { teamId: string; agentId: string; userId: string }>();
     for (const binding of deps.store.values()) {
       if (binding.userId !== userId) continue;
-      if (binding.source !== 'picked' && binding.source !== 'recovered') continue;
+      // D2（用户 2026-11-22 拍板）：只认 chip。'picked' 是旧弹窗留下的，'recovered'
+      // 是自愈推导出来的 —— 两者都不是「这台机器上用户亲手做过的选择」。把它们
+      // 当默认的后果实测过：用户清空 session_init 的默认 agent 之后，下一个新会话
+      // 仍被历史记录自动绑回同一个 agent（现场 2026-11-22 source:'auto'）。
+      if (binding.source !== 'chip') continue;
       seen.set(`${binding.teamId}|${binding.agentId}`, {
         teamId: binding.teamId,
         agentId: binding.agentId,
@@ -959,160 +1024,237 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
       });
     }
   };
-
-  const pick = async (sessionId: string, agent: unknown, signal: unknown): Promise<void> => {
-    const labelChoices = (entries: Array<{ id: string; name?: string }>): Choice[] =>
-      entries.map((entry) => ({ label: labelOf(entry.name, entry.id), id: entry.id }));
-    const skipOption: Choice = { label: SKIP_LABEL, id: '' };
-    const ordered = (choices: Choice[]): Choice[] => (settings.skipDefault ? [skipOption, ...choices] : [...choices, skipOption]);
-
+  /**
+   * One silent resolution per session -- the replacement for the old card.
+   *
+   * The order is documented at the top of this file: staged chip > session_init
+   * preset/bypass > unambiguous account > empty triple. Everything here is
+   * bounded by deps.timeoutMs and returns rather than throws.
+   */
+  const resolveSilently = async (sessionId: string): Promise<void> => {
     const userKey = await deps.resolveUserKey();
     if (userKey === undefined) {
       // Headless composition: credentials are disabled, so there is no key to
-      // list teams with. Inert, no card, and no bind (a later run may have one).
-      debug('agemem: session identity picker skipped, no user key (inert)');
+      // list teams with. Inert, and no bind (a later run may have one).
+      debug('agemem: session identity skipped, no user key (inert)');
       statusLabel = 'inert(no-key)';
       return;
     }
     const first = await candidatesWithOneRetry({ userKey, timeoutMs: deps.timeoutMs });
     if (first.kind !== 'ok') {
-      bindSkipped(sessionId, 'candidates failed: ' + first.reason);
+      // D3: a failed READ is not a decision. Nothing is written, the chip keeps
+      // saying 「未关联 · 点此设置」, and the next turn past the backoff retries.
+      noteUnresolved(sessionId, 'candidates failed: ' + first.reason);
+      return;
+    }
+    rememberAgentLabels(first.agents);
+
+    // 1) The composer chip wins when it was used: an explicit click in THIS
+    //    session is a stronger statement than an account-level default, and it
+    //    is the only way to overrule a preset (including "本次不关联", which
+    //    must stay reachable even when a default agent is fixed in the panel).
+    const chosen = staged.get(sessionId);
+    if (chosen !== undefined) {
+      staged.delete(sessionId);
+      if (chosen.associate === false) {
+        bindNothing(sessionId, 'user-declined', 'the user chose 本次不关联 in the composer chip');
+        return;
+      }
+      submit(sessionId, {
+        teamId: chosen.teamId,
+        agentId: chosen.agentId,
+        // Absent (not empty) when no task was picked: absence means "no task".
+        ...(chosen.taskId !== undefined && chosen.taskId !== '' ? { taskId: chosen.taskId } : {}),
+        userId: first.userId,
+        source: 'chip',
+        at: now(),
+      });
       return;
     }
 
-    // 1) The USER-LEVEL session_init config decides whether a card appears at
-    //    all -- never the candidate count (MemoryProxy init.ts:943-990).
+    // 2) The per-user session_init config: an account-level decision made
+    //    once, so it must not need the chip every session. Only reached when
+    //    the user did NOT pick anything here.
     const decision = await readDecision(userKey, first.userId);
     if (decision.kind === 'bypass') {
-      // default_associate=0: associate nothing, show nothing.
       bindNothing(sessionId, 'user-bypass', 'user session_init: default_associate=0 (bypass)');
       return;
     }
     if (decision.kind === 'preset') {
       const preset = await resolvePreset(decision, first, userKey);
       if (preset !== undefined) {
-        // Preset fixes team + agent for the account, so those stay silent. The
-        // work item is NOT account-level -- it changes per session -- so it
-        // still gets its one optional card, and only when the team actually has
-        // running work items (an empty list has nothing worth asking).
-        const presetTask = await resolveTask({ teamId: preset.teamId }, first.tasks ?? [], userKey, agent, signal);
         submit(sessionId, {
           teamId: preset.teamId,
           agentId: preset.agentId,
-          // Absent (not empty) when nothing was picked: absence means "no task".
-          ...(presetTask !== undefined ? { taskId: presetTask } : {}),
           // The VERIFIED user id, not server.userId.
           userId: first.userId,
           source: 'user-preset',
           reason: 'user session_init: preset',
           at: now(),
-        });
+        }, true);
         return;
       }
-      // Mismatch already warned once; behave exactly like ask from here on.
+      // Mismatch already warned once; fall through to the auto path.
     }
+
     if (first.teams.length === 0) {
-      bindSkipped(sessionId, 'the user belongs to no team');
+      // Deterministic: this account owns no team, so no retry will change it.
+      // Still a decision about the session, so it is written as one.
+      bindNothing(sessionId, 'skipped', 'the user belongs to no team');
       return;
     }
 
-    // 2) ask: the asset_confirm question comes FIRST, unconditionally. Only its
-    //    "yes" unlocks the folding below (init.ts:1026-1046, 1110-1157).
-    const confirmed = await askAssetConfirm(agent, signal);
-    if (confirmed.kind === 'failed') {
-      bindSkipped(sessionId, confirmed.reason);
-      return;
-    }
-    if (confirmed.kind === 'no') {
-      // 这是用户的明确决定（「否，本次不关联」），不是「没绑成」——归因必须能分开，
-      // 否则审计里 skipped 既表示超时/失败、又表示用户主动退出。
-      bindNothing(sessionId, 'user-declined', confirmed.reason);
+    // 3) Nothing to ask: one team + one agent, or the configured triple.
+    const auto = (await unambiguousTriple(first, userKey)) ?? previouslyChosenTriple(first.userId);
+    if (auto !== undefined) {
+      submit(sessionId, { ...auto, source: 'auto', at: now() }, true);
       return;
     }
 
-    let team: TeamChoice;
-    let agents = first.agents ?? [];
-    // Tasks travel with the SAME scoped candidate call (metadata task/list):
-    // first.tasks is populated whenever listCandidates knew the team.
-    let tasks = first.tasks ?? [];
-    if (first.teams.length === 1) {
-      team = first.teams[0];
-    } else {
-      const choices = labelChoices(first.teams.map((entry) => ({ id: entry.teamId, name: entry.name })));
-      const asked = await ask([{
-        id: TEAM_QUESTION_ID,
-        header: 'TDB 记忆',
-        question: '请选择本次会话所属的 Team: ' + SKIP_HINT,
-        options: ordered(choices).map((choice) => ({ label: choice.label })),
-        multiSelect: false,
-      }], agent, signal);
-      if (asked.kind !== 'answers') {
-        bindSkipped(sessionId, asked.reason);
-        return;
-      }
-      const picked = resolveChoice(asked.answers, TEAM_QUESTION_ID, choices);
-      if (picked.kind !== 'picked') {
-        bindSkipped(sessionId, picked.reason);
-        return;
-      }
-      team = first.teams.find((entry) => entry.teamId === picked.id) ?? { teamId: picked.id };
-      const scoped = await deps.candidates({ userKey, teamId: team.teamId, timeoutMs: deps.timeoutMs });
-      agents = scoped.kind === 'ok' ? scoped.agents ?? [] : [];
-      tasks = scoped.kind === 'ok' ? scoped.tasks ?? [] : tasks;
-    }
+    // 4) Ambiguous account and the chip was never used: the rule is
+    //    「本次不关联」, never "silently pick the configured team".
+    bindNothing(
+      sessionId,
+      'skipped',
+      'no preset, ambiguous candidates, and the composer chip was not used',
+    );
+  };
 
-    if (agents.length === 0) {
-      const scoped = await deps.candidates({ userKey, teamId: team.teamId, timeoutMs: deps.timeoutMs });
-      agents = scoped.kind === 'ok' ? scoped.agents ?? [] : [];
-      if (scoped.kind === 'ok' && (scoped.tasks ?? []).length > 0) tasks = scoped.tasks ?? [];
+  /**
+   * The composer chip's data source (read-only: it never binds anything).
+   *
+   * The preset agent comes back as `locked` so the panel can render it as text
+   * instead of a radio -- "show the default agent's name and id, not selectable".
+   * That lock lifts as soon as the user has staged something: the chip outranks
+   * the account default (see resolveSilently), so freezing the panel on the very
+   * agent the user just overruled would strand them.
+   */
+  const describe = async (sessionId: string, teamId?: string): Promise<ComposerState> => {
+    const state: ComposerState = { status: 'ok', teamId: '', teams: [], agents: [], tasks: [] };
+    const bound = deps.store.get(sessionId);
+    if (bound !== undefined) {
+      // I3 backfill: an older row (or one written before this build) has no
+      // label; if a candidates read ever taught us this agent's name, answer
+      // with it rather than letting the chip paint a bare id.
+      const cachedLabel = bound.agentId === '' ? undefined : agentLabels.get(bound.agentId);
+      state.bound = bound.agentLabel === undefined && cachedLabel !== undefined
+        ? { ...bound, agentLabel: cachedLabel }
+        : bound;
+      // An empty triple nobody chose is "not resolved yet", not 「未关联」: the
+      // chip must stay editable so the user can fix it, and the panel must be
+      // able to say why. Only associate:false is a real decline. (Only legacy
+      // rows can be in this shape -- new failures write no row at all.)
+      if (isUnresolvedBinding(bound) || isProvisionalDecline(bound)) state.unresolved = true;
+      // A pre-answer (written at creation, no turn yet) is open to change: see
+      // SessionBinding.unconfirmedAt. The chip renders it as 「待生效」 and keeps
+      // the panel reachable -- that is what makes rule ② true when the account
+      // has a default agent.
+      if (bound.unconfirmedAt !== undefined) state.editable = true;
+    } else if (retryAfter.has(sessionId)) {
+      // D3/I4: the last resolution failed transiently and deliberately wrote
+      // nothing, so the row's ABSENCE is the unresolved state. Read it here or
+      // the chip would look freshly unset and never explain itself.
+      state.unresolved = true;
     }
-    if (agents.length === 0) {
-      bindSkipped(sessionId, 'this user owns no agent in the picked team');
-      return;
+    const stagedChoice = staged.get(sessionId);
+    if (stagedChoice !== undefined) state.staged = stagedChoice;
+    const userKey = await deps.resolveUserKey();
+    if (userKey === undefined) {
+      state.status = 'inert';
+      state.reason = 'no user key in this composition';
+      return state;
     }
-
-    let agentId: string;
-    if (agents.length === 1) {
-      agentId = agents[0].agentId;
-    } else {
-      const choices = labelChoices(agents.map((entry) => ({ id: entry.agentId, name: entry.name })));
-      const asked = await ask([{
-        id: AGENT_QUESTION_ID,
-        header: 'TDB 记忆',
-        question: '请选择「' + (team.name ?? team.teamId) + '」下要使用的 Agent: ' + SKIP_HINT,
-        options: ordered(choices).map((choice) => ({ label: choice.label })),
-        multiSelect: false,
-      }], agent, signal);
-      if (asked.kind !== 'answers') {
-        bindSkipped(sessionId, asked.reason);
-        return;
+    const first = await candidatesWithOneRetry({ userKey, timeoutMs: deps.timeoutMs });
+    if (first.kind !== 'ok') {
+      state.status = 'failed';
+      state.reason = first.reason;
+      return state;
+    }
+    rememberAgentLabels(first.agents);
+    const decision = await readDecision(userKey, first.userId);
+    const preset = decision.kind === 'preset' ? await resolvePreset(decision, first, userKey) : undefined;
+    const presetAgentId = decision.kind === 'preset' ? decision.agentId : undefined;
+    // Which team's agents to list: the query -> staged -> preset -> bound ->
+    // the account's only team. '' means "the account has several, choose first".
+    // Staged ranks ABOVE preset for the same reason resolveSilently does: the
+    // panel must reopen on the team the user just picked, not snap back to the
+    // account default the moment they look at it.
+    const wantedTeam = ((): string => {
+      if (teamId !== undefined && teamId !== '') return teamId;
+      if (stagedChoice !== undefined && stagedChoice.teamId !== '') return stagedChoice.teamId;
+      if (preset !== undefined) return preset.teamId;
+      if (bound !== undefined && bound.teamId !== '') return bound.teamId;
+      return first.teams.length === 1 ? first.teams[0].teamId : '';
+    })();
+    state.teamId = wantedTeam;
+    for (const team of first.teams) {
+      state.teams.push({ id: team.teamId, label: labelOf(team.name, team.teamId) });
+    }
+    let agents: AgentChoice[] = first.agents ?? [];
+    let tasks: TaskChoice[] = first.tasks ?? [];
+    if (wantedTeam !== '' && wantedTeam !== first.teams[0]?.teamId) {
+      // Scoped read: agents/tasks belong to ONE team, so a team change needs a
+      // second round trip (the whole point of describe() being per-team).
+      const scoped = await deps.candidates({ userKey, teamId: wantedTeam, timeoutMs: deps.timeoutMs });
+      if (scoped.kind === 'ok') {
+        agents = scoped.agents ?? [];
+        tasks = scoped.tasks ?? [];
+        rememberAgentLabels(agents);
       }
-      const picked = resolveChoice(asked.answers, AGENT_QUESTION_ID, choices);
-      if (picked.kind !== 'picked') {
-        bindSkipped(sessionId, picked.reason);
-        return;
-      }
-      agentId = picked.id;
+    } else if (wantedTeam === '' ) {
+      // Several teams: list no agents until one is chosen (asking now would
+      // show an agent that does not exist in the team the user finally picks).
+      agents = [];
+      tasks = [];
     }
+    for (const agent of agents) {
+      const option: ComposerOption = { id: agent.agentId, label: labelOf(agent.name, agent.agentId) };
+      if (agent.description !== undefined && agent.description.trim() !== '') {
+        option.detail = agent.description.trim();
+      }
+      // Locked = the account default, shown as text. But only while the user has
+      // NOT staged anything: the chip outranks the preset, so a user who picked
+      // an agent (or 「本次不关联」) must see the panel they can still change,
+      // not one frozen on the account default they just overruled.
+      if (presetAgentId !== undefined && agent.agentId === presetAgentId && stagedChoice === undefined) {
+        option.locked = true;
+      }
+      state.agents.push(option);
+    }
+    for (const task of tasks) {
+      state.tasks.push({ id: task.taskId, label: labelOf(task.title, task.taskId) });
+    }
+    return state;
+  };
 
-    // The proxy's THIRD stage (form.ts:252-274): Task / work item -- optional,
-    // so every failure degrades to "no task" and never sinks team + agent.
-    const taskId = await resolveTask(team, tasks, userKey, agent, signal);
-
-    submit(sessionId, {
-      teamId: team.teamId,
-      agentId,
-      // Absent (not empty) when nothing was picked: the client only sends the
-      // header for a real task, and absence means "no task scope".
-      ...(taskId !== undefined ? { taskId } : {}),
-      // The VERIFIED user id, not server.userId: the whole point of the picker
-      // is that the config triple may be empty or stale.
-      userId: first.userId,
-      // Always 'picked': the user answered the card. The legacy 'userkey' value
-      // is only read back from an old state file.
-      source: 'picked',
-      at: now(),
+  /**
+   * The chip's commit. It only STAGES: the binding is written by the first
+   * turn's pre-step, which is what makes "choose before the session starts,
+   * read-only afterwards" true rather than cosmetic.
+   */
+  const choose = (sessionId: string, choice: IdentityChoice): boolean => {
+    if (sessionId === '') return false;
+    // Already RESOLVED: the chip is a label at that point, and a late write
+    // would swap the identity of a conversation that has already run a turn.
+    // An unresolved record is the opposite case -- it is the record this click
+    // exists to correct, so it must not block the write.
+    const existing = deps.store.get(sessionId);
+    if (existing !== undefined && existing.committedAt !== undefined && existing.unconfirmedAt === undefined) {
+      debug('agemem: composer chip refused, session identity is committed', { sessionId });
+      return false;
+    }
+    staged.set(sessionId, choice);
+    // The user just answered the question the backoff was waiting on: resolve on
+    // the next pre-step instead of making them sit out the window.
+    retryAfter.delete(sessionId);
+    debug('agemem: composer chip staged a session identity', {
+      sessionId,
+      team: choice.teamId,
+      agent: choice.agentId,
+      task: choice.taskId,
+      associate: choice.associate,
     });
+    return true;
   };
 
   /**
@@ -1125,29 +1267,97 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
   const parentSessionOf = (agent: unknown): string | undefined => {
     const session = (agent as { session?: { header?: { parentSession?: unknown } } } | undefined)?.session;
     const parent = session?.header?.parentSession;
-    return typeof parent === 'string' && parent !== '' ? parent : undefined;
+    if (typeof parent === 'string' && parent !== '') return parent;
+    // UI 分支不带 header.parentSession（见已知事实），父 id 只能来自 plugin record。
+    return deps.knownBranchParent?.(agent);
   };
-
   const ensureBound = async (agent: unknown, signal?: unknown): Promise<void> => {
     const sessionId = agentKey(agent as any);
-    // Record BEFORE both early returns: with the card switched off (or the
+    // Record BEFORE both early returns: with resolution switched off (or the
     // session already bound) nothing below runs, and the process-wide
     // latestSessionId would stay undefined -- tools and segments would then
     // keep using the configured identity while recall/writeback used the
     // bound one, i.e. two identities inside one turn.
     deps.onSessionSeen?.(sessionId);
-    if (!settings.askAtSessionStart) return;
+    if (!settings.enabled) return;
+    const openRow = deps.store.get(sessionId);
+    // The chip's staged pick and the pre-answer are answers to the SAME question
+    // ("which agent does this conversation belong to"), so the click wins and the
+    // prompt is not burned: confirm only when there is nothing staged.
+    if (openRow !== undefined && staged.has(sessionId)) {
+      await resolveSilently(sessionId);
+      return;
+    }
+    // Turn 1 is about to speak: from here the row is frozen (I1).
+    confirmPendingRow(sessionId);
     const existing = deps.store.get(sessionId);
     if (existing !== undefined) {
-      // 分支/恢复的会话：父会话绑什么就用什么（绑定已在 agent/created 或上一次
-      // pre-step 写进 store），不再问人、也不重复取卡。P0-2 的两条自愈路径在
-      // reconcileExisting 里，它们同样不弹窗。
+      // I1: a committed row is FROZEN. Nothing below this line may write for the
+      // session -- not the chip, not the P0-2 heals. Measured pain: a heal window
+      // swapped the identity of a conversation that had already written turns,
+      // so turn 1 landed in agent A's library and turn 10 in agent B's.
+      if (existing.committedAt !== undefined) return;
+      // 用户刚在 chip 里点过「确定」（这个会话还是旧版本写的、没有 committedAt）：
+      // 那一刻的答案高于旧记录，也高于自愈探针，否则探针会把用户刚选的 agent
+      // 覆盖成「无歧义推导」的那一个。
+      if (staged.has(sessionId)) {
+        await resolveSilently(sessionId);
+        return;
+      }
+      if (isProvisionalDecline(existing)) {
+        // B11：分支的开放空行不是「系统替用户拒绝」，它只是在等父会话先绑身份。
+        // 父会话一绑上，这一支就把它补成父三元组（不发网络）；父还没绑就什么都不做。
+        if (existing.source === 'inherited' && branchParentOf(existing.reason) !== undefined) {
+          await reconcileExisting(sessionId, existing);
+          return;
+        }
+        // The system declined on the user's behalf (ambiguous account, rule ⑤).
+        // Re-deriving it every turn would just rewrite the same row; the panel is
+        // where this gets answered, and a pick there must commit.
+        if (!staged.has(sessionId)) return;
+        await resolveSilently(sessionId);
+        return;
+      }
+      // Legacy record (no committedAt): one last heal, then the submit inside it
+      // stamps committedAt and the session freezes like everything else.
       await reconcileExisting(sessionId, existing);
       return;
     }
-    // 走到这里说明父会话本身没绑成 —— 仍不问人，记一条 skipped 并把无身份暴露给调用方。
-    if (parentSessionOf(agent) !== undefined) {
-      bindSkipped(sessionId, 'branch inherits parent identity (no picker in a branch)');
+    // No row yet. A previous attempt failed transiently and wrote NOTHING (see
+    // noteUnresolved): honour its backoff so a dead core is not re-probed on every
+    // step of every turn, but DO retry once the window passes -- that retry is
+    // what makes "core came back" heal the session by itself.
+    if (!staged.has(sessionId)) {
+      const retry = retryAfter.get(sessionId);
+      if (retry !== undefined) {
+        if (now() < retry) return;
+        retryAfter.delete(sessionId);
+      }
+    }
+    // 走到这里说明父会话本身没绑成 —— 仍不问人，把无身份暴露给调用方：空三元组
+    // 让缺身份在 memory-client 那里显形，而不是退回 config 的团队池。
+    const branchParent = parentSessionOf(agent);
+    if (branchParent !== undefined) {
+      // 父会话已经绑好：立刻抄，不留窗口（分支绝不自己发网络请求）。
+      const parent = deps.store.get(branchParent);
+      if (parent !== undefined && parent.teamId !== '') {
+        submit(sessionId, {
+          teamId: parent.teamId,
+          agentId: parent.agentId,
+          userId: parent.userId,
+          ...(parent.taskId === undefined || parent.taskId === '' ? {} : { taskId: parent.taskId }),
+          ...(parent.agentLabel === undefined ? {} : { agentLabel: parent.agentLabel }),
+          source: 'inherited',
+          reason: 'branch of ' + branchParent,
+          at: now(),
+          committedAt: parent.committedAt ?? now(),
+        });
+        return;
+      }
+      // 父会话还没绑上：留一条**开放**的空行（无 committedAt）。空三元组让缺身份在
+      // memory-client 那里显形，而 reason 里的父 id 让 reconcileExisting 在父绑上后
+      // 把三元组直接补回来 —— 不必让分支自己发一次网络请求。
+      bindNothing(sessionId, 'inherited', 'branch of ' + branchParent);
       return;
     }
     const running = inFlight.get(sessionId);
@@ -1158,11 +1368,11 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     }
     const started = (async () => {
       try {
-        await pick(sessionId, agent, signal);
+        await resolveSilently(sessionId);
       } catch (error) {
-        // pick() is written not to throw; this is the belt.
-        debug('agemem: session identity picker failed', error);
-        bindSkipped(sessionId, 'unexpected picker failure');
+        // resolveSilently() is written not to throw; this is the belt.
+        debug('agemem: session identity resolution failed', error);
+        bindSkipped(sessionId, 'unexpected resolution failure');
       } finally {
         inFlight.delete(sessionId);
       }
@@ -1170,7 +1380,6 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     inFlight.set(sessionId, started);
     await started;
   };
-
   const off = ctx.on(
     'agent/pre-step',
     async (payload: { agent?: unknown; signal?: unknown }, next: () => Promise<PreStepDecision>) => {
@@ -1187,7 +1396,6 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     },
     { prepend: true },
   );
-
   return {
     status: () => statusLabel,
     ensureBound: async (agent: unknown, signal?: unknown) => {
@@ -1197,10 +1405,37 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
         // never propagate
       }
     },
+    writebackPolicy: (sessionId: string) => {
+      const bound = deps.store.get(sessionId);
+      if (bound === undefined) {
+        // No row means resolution has not produced an answer for this session. If
+        // a transient failure is on its backoff clock, the answer is genuinely
+        // coming: hold the write. Otherwise the configured triple is the identity
+        // memory-client will use (either resolution is switched off, or this
+        // session simply has not run a pre-step yet), and nothing is pending.
+        return retryAfter.has(sessionId) ? 'defer' : 'send';
+      }
+      // A provisional decline (rule ⑤: ambiguous account, chip unused) is the
+      // SYSTEM's guess, not the user's decision: the chip is still editable and
+      // a later pick must be able to write back the turns spoken under it. So it
+      // defers. Only the two sources that are genuinely the user's word skip.
+      if (isProvisionalDecline(bound)) return 'defer';
+      // A pre-answer is not an identity yet (D4): the first turn's write would
+      // land under a preset the user is still allowed to overrule, so hold it
+      // until the row is confirmed (or replaced) by that same turn's pre-step.
+      if (bound.unconfirmedAt !== undefined) return 'defer';
+      if (bound.associate === false) return 'skip';
+      if (bound.teamId === '') return 'defer';
+      return 'send';
+    },
+    describe,
+    choose,
     dispose: () => {
       off();
       inFlight.clear();
       healInFlight.clear();
+      staged.clear();
+      retryAfter.clear();
     },
   };
 }

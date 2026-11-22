@@ -964,6 +964,29 @@ describe('soul injection reporting (task-13)', () => {
     expect(calls[0].headers.authorization).toBe('Bearer secret-key');
   });
 
+  // A4（2026-11-20 补）：类型里有 personaChars 不等于报得出去——这一层显式搬字段，
+  // 否则 Core 的 asVolatile 白名单收不到，pairs.charsVerified 结构性恒 0。
+  it('A4：volatile.personaChars 必须随包上报；没有时不塞空键', async () => {
+    const { fetchImpl, calls } = coreFixture();
+    const client = createClient(fetchImpl);
+    await client.reportSoulInjection({
+      sessionKey: 'sess-pc',
+      turn: 3,
+      volatile: { chars: 1200, hash: 'cafe1234', skipped: false, personaChars: 71 },
+    });
+    expect((calls[0].body as { volatile: Record<string, unknown> }).volatile).toMatchObject({
+      chars: 1200, hash: 'cafe1234', skipped: false, personaChars: 71,
+    });
+    const { fetchImpl: f2, calls: c2 } = coreFixture();
+    await createClient(f2).reportSoulInjection({
+      sessionKey: 'sess-pc2',
+      turn: 4,
+      volatile: { chars: 1200, hash: 'cafe1234', skipped: false },
+    });
+    // 缺键 = 旧调用方没报 → 不发该字段（发 0 会被当成「注入了 0 字」）。
+    expect(Object.prototype.hasOwnProperty.call((c2[0].body as { volatile: object }).volatile, 'personaChars')).toBe(false);
+  });
+
   it('A4：usage 上送带 phase 与 sessionKey（否则 stats.usage.sessions 恒 0）', async () => {
     const { fetchImpl, calls } = coreFixture();
     const client = createClient(fetchImpl);
@@ -978,6 +1001,19 @@ describe('soul injection reporting (task-13)', () => {
     expect(body.sessionKey).toBe('sess-usage-1');
     expect(body.usage).toEqual({ matchedLines: 2, totalLines: 8, overlapPct: 25 });
     expect(JSON.stringify(body)).not.toContain('text');
+  });
+
+  it('A4（2026-11-20）：payload 不带 sessionKey 时回落第二参数 sessionId，proof 才能按会话归并', async () => {
+    const { fetchImpl, calls } = coreFixture();
+    const client = createClient(fetchImpl);
+    await client.reportSoulInjection(
+      { phase: 'card', card: { version: 5, hash: 'h5', chars: 900 }, turn: 3 },
+      'session-ctx-1',
+    );
+    const body = calls[0].body as Record<string, unknown>;
+    expect(body.sessionKey).toBe('session-ctx-1');
+    expect(body.phase).toBe('card');
+    expect(body.turn).toBe(3);
   });
 
   it('turn 缺省上送 null，且 card/volatile 缺省时不出现在请求体', async () => {

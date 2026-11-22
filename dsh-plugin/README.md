@@ -290,50 +290,76 @@ node scripts/agemem-identity.mjs --profile desktop --team team-xxx --agent agt-x
 - **user key 永远不写进 patch**（patch 会被 `--dump-config` 打印、被复制、被 grep），只留在凭据库或 env。
 - 写回后要重启宿主才生效（配置在挂载时读）。
 
-### 会话开始时选 Team / Agent（弹卡片，不是命令行）
+### 身份第二条入口：输入框行的 TDB chip（v4，不再弹卡片）
 
-静态三元组 = 「这台机器永远用这个身份」；多团队的人每天在不同 team 之间切换，改 patch 再重启不是办法。所以身份的第二条入口是**会话开始时的宿主原生卡片**（`ctx.userQuestions.ask`，和 proxy 那边的会话初始化表单同一套语义）。
+静态三元组 = 「这台机器永远用这个身份」；多团队的人每天在不同 team 之间切换，改 patch 再重启不是办法。所以身份的第二条入口是 **composer 输入框左侧的一个 chip**（与模型选择器同一行，宿主槽位 `conversation.input.left`）。
 
-**弹不弹卡由用户级 `session_init` 配置决定，与候选数量无关**（照抄 `MemoryProxy/src/session/user-session-init-preset.ts:20-40` 的决策表）：首次 `agent/pre-step` 读
-`POST /v3/meta/config/user/get {user_id, module:"session_init"}`，拿 `manual_select` / `default_associate` / `default_team_id` / `default_agent_id` 四个生效值：
+**为什么撤掉 v3 的会话开始弹窗**（task-117 v4 / m08428）：那条链路在 `agent/pre-step` 里用 `ctx.userQuestions.ask` 连问三题，有两个结构性问题——
+
+1. 宿主拒绝在会话跑过一轮之后更换 agent 的 tools，所以「只能在轮次开始后才能回答的问题」按构造就来得太晚；
+2. 弹窗打开时会清空正在新建会话的工作区信息（实测：无论答「关联」还是「不关联」，工作区输入都被清掉）。移除这条路径即消除症状。
+
+chip 的语义照抄宿主的 agent-preset：**只在会话首轮之前可选，选定后该会话只读**。
+
+**账号缺省不是判决，只是预答**（2026-11-22，D4）：preset 命中的会话在 `agent/created` 就会写一行绑定（否则首轮 pre-step 之前的任何读取面都会先用 config 三元组），但那行带 `unconfirmedAt`，chip 因此仍渲染成可点的「… · 可改 ▾」。首轮 `agent/pre-step` 若用户没动过，`confirmPendingRow()` 剥掉 `unconfirmedAt` 把它冻结成正式绑定（之后 `choose()` 一律 409）；中途点过 chip 则以 chip 为准（`source=chip` / `user-declined` 覆盖预答行）。写回策略对预答行返回 `defer`——首轮还没开始，替用户把他没确认过的身份写进 L0 是没有依据的。`SessionIdentityStore.load()` 会一起拷回 `unconfirmedAt`，否则进程重启会把这个预答静默变成用户没做过的决定。
+
+| 时机 | 行为 |
+| --- | --- |
+| 会话首轮之前 | chip 可点开面板：Team（多 team 时）/ Agent（有 preset 默认 agent 时该行标 `locked`、不可点，但仍可选「本次不关联」）/ Task（首项=本次不关联任务）。点「确定」只是 **staged**，不写绑定；一旦 stage 过，面板改跟 staged 走、preset 那行不再锁（用户已当场推翻账号缺省） |
+| 会话首轮（`agent/pre-step`） | `resolveSilently` 按顺序收敛：①无 user key ⇒ inert，不绑定 ②候选取不到 ⇒ skipped + 记原因 ③**有 staged 选择 ⇒ 写绑定**（`source=chip`；staged 是「本次不关联」⇒ 空三元组 `source=user-declined`）④`session_init` 为 bypass ⇒ 空三元组 ⑤`session_init` 为 preset ⇒ `source=user-preset` ⑥无 preset 且候选无歧义 ⇒ `source=auto` ⑦**无 preset 且候选有歧义、用户又没点 chip ⇒ 空三元组 `source=skipped`**（不替用户猜） |
+| 已绑定 | chip 降级成**只读标签**（显示 team + agent），再点不改；`choose()` 对已绑定会话直接忽略——晚写会换掉一个已经跑过轮次的会话身份 |
+| **未解析**（空三元组，但不是用户选的） | chip **保持可编辑**并显示「未关联 · 点此设置」。识别口径是 `isUnresolvedBinding()`：`associate !== false && 三元组全空 && source ∈ {skipped, delegated, inherited}`。只有显式「本次不关联」（`associate:false`）才渲染成只读的「未关联」 |
+
+**为什么必须区分「未解析」与「用户拒绝」**（2026-11-22 现场 `session-beab2051`）：候选拉取撞上 3 秒的 Core 抖动，写进一条 `source=skipped` 的空三元组；旧实现把这**任何**绑定都渲染成只读的「未关联」，而 `choose()` 又拒绝覆盖已绑定会话 —— 于是用户明明配了 `session_init` 默认 agent，chip 却永久显示「未关联」，且没有修正入口。现在两层都改：`describe()` 带 `unresolved:true`、`choose()` 允许覆盖未解析记录（仍拒绝覆盖真绑定），`ensureBound` 在 `UNRESOLVED_RETRY_MIN_AGE_MS`（30s）退避后重走一次 `resolveSilently`。重试**只针对 `candidates failed:*`**（`isCandidatesFailure`）：「用户不属于任何 team」「有歧义且没用 chip」是确定性结论，重问一百次也是同一个答案，那是纯网络税。chip 里刚点过「确定」的那一笔（staged）高于自愈探针，不会被探针改写。
+
+面板数据来自 `GET /tdb-identity/state?sessionId=…&teamId=…`（只读，返回 `ComposerState`：`teams` / `agents` / `tasks` / 当前 `bound` / `staged`，preset 命中的 agent 带 `locked:true`）；点确定走 `POST /tdb-identity/choose`。两个端点由 `src/identity-control.ts` 注册，没有 `webServer` 时只打一行 debug、chip 自然不出现。
+
+**chip 优先于 preset；preset 与候选数量无关**：用户在本会话里点过 chip 的那一笔（staged）压过账号级 `session_init` 缺省——否则一旦账号配了 `default_agent_id`，面板里的「本次不关联」就永远走不到，而「有默认 agent 时仍允许显式不关联」正是那个面板存在的理由。没有 staged 时，首个 `agent/pre-step` 才去读 `POST /v3/meta/config/user/get {user_id, module:"session_init"}`（决策表照抄 `MemoryProxy/src/session/user-session-init-preset.ts:20-40`），拿 `manual_select` / `default_associate` / `default_team_id` / `default_agent_id` 四个生效值——
 
 | 条件 | 行为 |
 | --- | --- |
-| 本 session 已绑定 | 不再弹，直接用绑定值（也不再读配置） |
-| `manual_select=0` + `default_associate=1` + `default_team_id` 有值 | **preset**：静默绑定该 team；`default_agent_id` 有值就用它，没值则取该 team 下唯一的 agent（0 个或多个 ⇒ 视为预设失效）。一次卡都不弹，`source=user-preset` |
-| `manual_select=0` + `default_associate=0` | **bypass**：`source=user-bypass`，写**空三元组** ⇒ 本 session**不注入团队资产、也不写回**，一次卡都不弹 |
-| 其余（未配置 / `manual_select≠0` / 配了关联但没 team / 配置读不到） | **ask**：先弹「请确认本次对话是否要关联团队资产？」，答「是」之后才继续 |
-| 答「是，关联团队资产」 | 此时才按候选数折叠：1 team 不问 team 题、1 agent 不问 agent 题；多候选各弹一题（`team_select` / `agent_select`），`source=picked` |
-| 答「否，本次不关联」/ 选「本次不关联(跳过注入,直接放行)」/ 自由文本写「跳过」 | 本 session 记 `source=skipped` + 空三元组，**不注入团队上下文**（proxy 的 bypass 语义），也不再弹 |
-| 子代理 / 无人类应答者（`DELEGATED_CALLER`） | 静默跳过，回落 config 三轴，不打 warn（否则子代理日志里一片红） |
-| headless / 无凭据库 | 没有 user key ⇒ 直接 inert，不弹卡 |
-| 超时（`identity.askTimeoutMs`）、无 `userQuestions` 服务 | 记 skipped + warn 一次，会话照常继续（绝不把 turn 卡住） |
-| 读配置的时机 | mount 读一次（`bypass` 要据此关掉后台预热与头包预取），**首个**会话复用这次的结果，之后每个新会话各读一次 —— 一个会话恰一次往返，改配置也不需要重启 |
+| 本 session 已绑定 | 直接复用绑定值（也不再读配置） |
+| `manual_select=0` + `default_associate=1` + `default_team_id` 有值 | **preset**：静默绑定该 team；`default_agent_id` 有值就用它，没值则取该 team 下唯一的 agent（0 个或多个 ⇒ 视为预设失效）。`source=user-preset` |
+| `manual_select=0` + `default_associate=0` | **bypass**：`source=user-bypass`，写**空三元组** ⇒ 本 session**不注入团队资产、也不写回** |
+| 其余（未配置 / `manual_select≠0` / 配了关联但没 team / 配置读不到） | 不提问，交给 chip / 无歧义兜底：读不到配置 ⇒ fail-open 走 `auto` |
 
-「空三元组」是 bypass / 答「否」的实现方式：绑定里的 `teamId/agentId/userId` 全为空串，`memory-client` 的 `missingIdentity()` 因此报 `teamId`，recall / head pack / 工具面 / 写回**全部不发请求**——这比「回落 config 三元组」更彻底，否则同一台机器上 bypass 的人依然会读到配置里那个 team 的记忆。
+preset 指向的 team 不属于这个用户、或 agent 不在该 team ⇒ 只 warn 一次（`falling back to the composer chip`）后走静默路径，不弹任何东西。
 
-bypass 还要管住**决策之前**的那次读：mount 期会做 embedding 预热（`/v3/core/read` + 一次 `/v3/recall`）和头包预取（persona / 场景索引 / 技能清单三发），轮次开始（`turn/start`）与 system-prompt 渲染时又会各自触发一次头包取数，那时都还没有绑定。所以 mount 也读一次 `session_init`，并把结果交给 `HeadPackDeps.allowFetch` 这一个闸门 —— 它覆盖**全部**取数路径（mount 刷新 / `turn/start` / `current()` 渲染 / `onBound`），判定 `bypass` 就整轮不发（e2e 里连 `head pack composed` 都不出现），绑定的时候也不再刷新头包；读配置失败则 **fail-open**（照常预热、卡片照弹）——少一次预热只丢一个冷启动，替一个明确选了「不关联」的人读团队数据补不回来。
+「空三元组」是 bypass / 「本次不关联」/ 歧义未选的实现方式：绑定里的 `teamId/agentId/userId` 全为空串，`memory-client` 的 `missingIdentity()` 因此报 `teamId`，recall / head pack / 工具面 / 写回**全部不发请求**——这比「回落 config 三元组」更彻底，否则同一台机器上选了不关联的人依然会读到配置里那个 team 的记忆。
+
+bypass 还要管住**决策之前**的那次读：mount 期会做 embedding 预热（`/v3/core/read` + 一次 `/v3/recall`）和头包预取（persona / 场景索引 / 技能清单三发），轮次开始（`turn/start`）与 system-prompt 渲染时又会各自触发一次头包取数，那时都还没有绑定。所以 mount 也读一次 `session_init`，并把结果交给 `HeadPackDeps.allowFetch` 这一个闸门 —— 它覆盖**全部**取数路径（mount 刷新 / `turn/start` / `current()` 渲染 / `onBound`），判定 `bypass` 就整轮不发（e2e 里连 `head pack composed` 都不出现），绑定的时候也不再刷新头包；读配置失败则 **fail-open**（照常预热）——少一次预热只丢一个冷启动，替一个明确选了「不关联」的人读团队数据补不回来。
 
 绑定按 **session** 持久化：默认写 `$DSH_HOME/agemem/session-identity.json`（与 outbox 同目录；`identity.statePath` 可显式指定，`identity.rememberSession=false` 则只留内存）。文件里只有 `teamId/agentId/userId/source/at`，**没有 key**。
 
-**关掉卡片 ≠ 忘掉绑定**：`identity.askAtSessionStart=false` 且 `identity.rememberSession=true` 时，状态文件照旧加载，里面已有的 session 绑定**继续对 recall / writeback（L0、skill buffer）以及 head pack 生效**——关掉的只是「问」这一步，不是「上次选的那个」。所以同一台机器上「卡片关掉 + 老 session 继续用点上来的身份」是支持的组合，不会悄悄退回 config 三轴。
+**关掉 chip ≠ 忘掉绑定**：`identity.enabled=false` 且 `identity.rememberSession=true` 时，状态文件照旧加载，里面已有的 session 绑定**继续对 recall / writeback（L0、skill buffer）以及 head pack 生效**——关掉的只是「让用户选」这一步，不是「上次选的那个」。
 
-状态文件最多留 **200 个 session**，超出时淘汰 `at` 最旧的那条（不是拒绝新增、也不会静默留个空值）：被淘汰的 session 下次再来就是「没绑定」，会重新弹一次卡。`identity.askAtSessionStart=false` 只是不再弹卡，**不卸载状态文件**——已经由人点过的绑定继续生效（关掉的是「问」这件事，不是「忘掉我上次选的」）；这也保证同一个 session 不会因为关了卡片就悄悄退回 config 身份、与别的会话混用两个身份。
+状态文件最多留 **200 个 session**，超出时淘汰 `at` 最旧的那条（不是拒绝新增、也不会静默留个空值）：被淘汰的 session 下次再来就是「没绑定」，会重新走一次静默解析，chip 也重新可选。
 
 | 配置键 | 缺省 | 作用 |
 | --- | --- | --- |
-| `identity.askAtSessionStart` | `true` | 总开关：关掉后**完全不读用户级配置、不弹卡**（纯静态三元组 / 自动化模式）；状态文件里已有的绑定仍然生效 |
-| `identity.followUserSessionInit` | `true` | 是否遵循用户级 `session_init`：`true` = preset/bypass 静默生效、ask 才弹卡；`false` = 跳过读配置，一律弹卡（老行为） |
-| `identity.askTimeoutMs` | `60000` | 等人点卡片的上限，到点 abort + 记 skipped |
+| `identity.enabled` | `true` | 总开关：关掉后**完全不读用户级配置、不解析、chip 不渲染**（纯静态三元组 / 自动化模式）；状态文件里已有的绑定仍然生效 |
+| `identity.followUserSessionInit` | `true` | 是否遵循用户级 `session_init`：`true` = preset/bypass 静默生效；`false` = 跳过读配置，一律走 chip / 无歧义兜底 |
 | `identity.rememberSession` | `true` | 绑定是否跨重启保留（按 session id） |
-| `identity.skipDefault` | `false` | 把「跳过」放到选项第一位（团队多、平时只闲聊的人更省一次点击） |
 | `identity.statePath` | 空 | 空 = outbox 同目录的 `session-identity.json` |
 
-绑定生效后，**读取面（recall / head pack / core_memory / skills）和写入面（L0 / skill buffer）全部用该 session 的身份**：`memory-client` 的 `isolation()` / `headers()` 走 `identityFor(sessionId)`，命中用绑定值、未命中回落 config 三轴，且这条解析是**同步**的（未绑定时立刻回落，不会 await 一张还没人点的卡片）。ready 行报 `sessionIdentity=on|off(config)|inert(no-key)|bound(<source>)`。
+绑定生效后，**读取面（recall / head pack / core_memory / skills）和写入面（L0 / skill buffer）全部用该 session 的身份**：`memory-client` 的 `isolation()` / `headers()` 走 `identityFor(sessionId)`，命中用绑定值、未命中回落 config 三轴，且这条解析是**同步**的（未绑定时立刻回落，不会 await 一次网络解析）。ready 行报 `sessionIdentity=on(chip)|off(config)|inert(no-key)|bound(<source>)`。
 
 **工具面与上面同一条链**：`memory_recall`（以及 skills / wiki 这些走同一个 client 的工具）在 `agent/pre-step` 里就通过 `onSessionSeen` 拿到当前 session id，再经 `identityFor(sessionId)` 解析身份 —— 它与 volatile 块、head pack 用的是**同一次解析结果**，不是 config 兜底。早期版本这里曾经分叉过（volatile 用绑定值、工具用 config 值，同一轮查了两份记忆，见 e2e 记录），现在有回归用例 `gives the memory_recall tool the same session identity as the volatile block` 钉住。
 
-一个已知边界（属设计选择）：head pack 在会话第一轮之前就可能已经用 mount 时的身份取过一次；绑定成功后插件会`headPack.invalidate()` + 重新取，所以第二轮起一定是新身份。第一轮里如果 personas 段已用旧身份渲染，那一条消息会留着旧身份的口径——它本来就来自「配置身份」，与绑定前的行为一致。
+一个已知边界（属设计选择）：head pack 在会话第一轮之前就可能已经用 mount 时的身份取过一次；绑定成功后插件会 `headPack.invalidate()` + 重新取，所以第二轮起一定是新身份。第一轮里如果 personas 段已用旧身份渲染，那一条消息会留着旧身份的口径——它本来就来自「配置身份」，与绑定前的行为一致。
+
+### 分支继承：子会话抄父会话的身份，不重新解析
+
+「在新对话中分支」出来的子会话沿用父会话的身份，不等 chip、不重解析、也不再问一次。判定与取值的顺序（`src/index.ts` 的 `bindAtCreated`）：
+
+1. `session.header.parentSession` 有值 ⇒ 直接用（这是 `SessionStore.fork` 写的正路）；
+2. 没有 ⇒ 扫子会话的 **inherited 前缀**（`[0, inheritedEventCount)`）找 `plugin:tdb-agemem/identity` 记录，取最靠后一条的 `data.sessionId` 当父 id（`src/branch-identity.ts` 的 `readBranchParentId`）。
+
+为什么需要第 2 条（2026-11-22 实测，属上游缺一行）：UI 的「在新对话中分支」走 `dsh-api-session-controller` 的 `commands.fork`，它 `ctx.agents.create({ …, meta: { cwd, isSeeded, agentPreset } })` **不含 parentSession**；能写这个字段的只有 `SessionStore.fork`，而 UI 分支绕过了它。插件也补不上——header 在构造期就被 `snapshotSessionHeader` 深拷贝、`agent/created` 发出时已经落盘，`agents.create` 的 options 里根本拿不到父 id。所以改用 plugin record：fork seed 按**引用**复制 `events.slice(0, boundary+1)`（`dsh-session/src/fork.ts` 注释原文「a new array retaining the source event objects」），父会话自己 log 里的记录因此原样出现在子会话的前缀里，`pluginRecordOf` 能读回来。
+
+父绑定还在 `store` 里就直接抄（连 `committedAt` 一起抄——冻结时间属于父会话那次决定，不该由分支重新盖一个）；父不在 `store` 里就用记录里的三元组兜底。父**还没**绑定时，子会话先留一条开放空行（`source=inherited` + `reason='branch of <parent>'`，不盖 `committedAt`），父稍后绑上时 `reconcileExisting` 会把它补成正式绑定。
+
+记录写入是幂等的（`appendBranchIdentity`：三元组/任务/显示名与上一条同类型记录全同就返回 `unchanged`），所以身份不变时不会每轮往 log 里塞一条。宿主侧 import 失败（`loadPluginRecordIo` 用非字面量 specifier，tsc 不解析该包）就整体 fail-open：读不到 → 退回按新会话解析，写不进 → 只打一行 debug，绝不影响这一轮。
 
 ## 排障
 
@@ -738,6 +764,7 @@ agemem: ready (endpoint=…, serviceId=default, identity=configured, keySource=c
 - `soul_person_search` / `soul_person_profile` 是「按名字查人」的两步：前者名字→`person_key`（精确/前缀/包含，命中档位随行返回），后者 key→九字段+关系边。两者都纯读；core 不可用时同样给可读文案，且「没人叫这个名字」与「查不了」是两句不同的话——空结果不会被伪装成失败，失败也不会被伪装成空结果。
 - L0 的 `session_id` 在 core schema 里其实是**可选**、也不校验 `|`（只有 skill 队列要求 id 不含分隔符）；
   插件仍然每条都带 `session_id`——会话维度对 L1 检索有用，是主动保留而不是 schema 强制。
+- **在父会话身份落定之前的 turn 边界上分支，继承不到身份**（2026-11-22 实测定案，属 seed 定义而非 bug）：fork seed 只复制 `events.slice(0, boundary+1)`，若用户把 `boundary` 选在父会话第一条 `plugin:tdb-agemem/identity` 之前（实测父会话 chip 在 turn 2 才落定，记录在 `seq 31`，而分支 `boundary=27`），seed 里就没有任何身份记录可读，子会话退回按新会话解析。前缀比对也救不了——实测子会话 `seq 0..27` 与父、与中间子会话逐条哈希各 27/27 全同，内容上不可区分。有 preset 时退化的结果与继承相同（解析到同一个 agent），只在「无 preset + 想沿用早期分支的父身份」时多问一次。根治要上游在 `dsh-api-session-controller/src/commands.ts` 的 `agents.create` meta 里补 `parentSession: source.header.id`。
 - 死信没有自动 TTL 清理：`outbox.dead.jsonl` 只追加不删，堆积靠人工 `requeueDead()` 或按 `reasonClass` 归档。
 - 身份选择的 **GUI 弹窗（v3）没做**：现在只有「启动自动解析」与「一次性 CLI」两条入口；CLI 需要先
   `npm run build`（它直接复用 `dist/` 里的 wire 契约，避免与插件分叉）。

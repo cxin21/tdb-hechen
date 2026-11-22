@@ -288,10 +288,11 @@ describe("client half: mounting", () => {
     expect(mounted.scope.namespace).toBe("tdb-agemem-dsh");
   });
 
-  it("registers the card, the settings page and the service-stack page", () => {
+  it("registers the card, the settings page, the service-stack page and the identity chip", () => {
     const mounted = mount();
-    // Wave 4 folded the retired tdb-lifecycle bundle in: three slots, one form.
-    expect(mounted.registrations).toHaveLength(3);
+    // Wave 4 folded the retired tdb-lifecycle bundle in (three slots, one form);
+    // task-117 v4 added the composer identity chip as a fourth slot.
+    expect(mounted.registrations).toHaveLength(4);
     expect(mounted.served).toEqual([["tdb-agemem-dsh"]]);
 
     const card = mounted.registrations.find((entry) => entry.options.name === "plugins.item")!;
@@ -322,14 +323,18 @@ describe("client half: mounting", () => {
     expect(typeof sectionFace.discard).toBe("function");
   });
 
-  it("registers only the service-stack page while the Host serves no profile entry", () => {
+  it("registers the service-stack page and the identity chip while the Host serves no profile entry", () => {
     const loaded = loadClient();
     const fake = fakeContext({}, { serve: false });
     loaded.exports.apply(fake.ctx);
     expect(fake.served).toEqual([["tdb-agemem-dsh"]]);
-    // No config form without a served namespace... but the lifecycle page is
-    // independent of it: a stack that is down must still be visible.
-    expect(fake.registrations.map((entry) => entry.options.id)).toEqual(["tdb-services"]);
+    // No config form without a served namespace... but neither the lifecycle page
+    // nor the composer chip depends on one: a stack that is down must still be
+    // visible, and the chip must be there to bind the next session.
+    expect(fake.registrations.map((entry) => entry.options.id)).toEqual([
+      "tdb-services",
+      "tdb-agemem-identity",
+    ]);
   });
 
   it("registers both dictionaries with the same key set", () => {
@@ -490,6 +495,50 @@ describe("client half: rendering", () => {
     expect(switches.length).toBe(BOOLEAN_PATHS.length);
     const ids = collectIds(view);
     for (const path of BOOLEAN_PATHS) expect(ids).toContain("tdb-agemem-" + path);
+  });
+});
+
+describe("client bundle markup", () => {
+  /*
+   * React error #62 is "The `style` prop expects a mapping from style properties
+   * to values, not a string". The Host renders this bundle with the production
+   * React build, so a string style crashes the WHOLE slot entry rather than
+   * warning: on 2026-11-22 the composer chip disappeared the moment its panel
+   * opened, and because the crash unmounts the slot there was nothing left to
+   * click. Keep the scan here so a string style can never ship again.
+   */
+  it("passes no string to a style prop", () => {
+    const source = readFileSync(CLIENT_PATH, "utf8");
+    const offenders = source
+      .split(/\r?\n/)
+      .map((line, index) => ({ line: line.trim(), number: index + 1 }))
+      .filter((entry) => /style:\s*"/.test(entry.line));
+    expect(offenders).toEqual([]);
+  });
+
+  /*
+   * A creation-time answer (preset / auto) is what the account defaults to, not
+   * something the person picked, so the chip must NOT claim 「待生效」for it: on
+   * 2026-11-22 12:13 session 0a7a0854 already had agent 青禾 frozen in the store
+   * while the chip still offered an edit. 「待生效」belongs to a click that the
+   * first turn has not written yet.
+   */
+  it("keeps 「待生效」for a click, not for a creation-time answer", () => {
+    const source = readFileSync(CLIENT_PATH, "utf8");
+    expect(source).toContain("const chipText = staged !== null");
+    expect(source).toContain("t(\"identityEditable\")");
+    expect(source).toContain('identityEditable: "可改"');
+  });
+
+  /*
+   * The pre-answer clears on the SERVER during the first turn, and the composer
+   * does not re-render for it, so polling must cover that case too or the chip
+   * keeps advertising an edit it can no longer make (measured 12:14, 0a7a0854).
+   */
+  it("polls while a creation-time answer waits for its first turn", () => {
+    const source = readFileSync(CLIENT_PATH, "utf8");
+    expect(source).toContain("const preAnswerOpen = state !== null && state.editable === true;");
+    expect(source).toContain("if (!stagedPicked && !preAnswerOpen) return undefined;");
   });
 });
 

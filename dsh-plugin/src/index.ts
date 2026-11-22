@@ -30,12 +30,18 @@ import { runHeadPackSegments, runVolatileSegments, segmentSummary, type SegmentD
 // head-pack debug line both quote it, so a scene index that failed reads as
 // `l2=fail:http_404` instead of silently emptying half the head pack.
 import { l2StatusForDebug, l2StatusSummary } from './segments/l2.js';
-// Session-start identity (task-117 v3): the host's own question card, asked from
-// agent/pre-step, bound per session and used by every later v3 call.
-import { installSessionIdentity, SessionIdentityStore, cardClearedSource, type UserQuestionsLike } from './session-identity.js';
+// Session identity (task-117 v4): chosen once in the composer chip, bound to the
+// session on its first turn and used by every later v3 call.
+import { installSessionIdentity, SessionIdentityStore, cardClearedSource } from './session-identity.js';
+// 分支身份继承（B11）：父会话把自己的身份写成一条 plugin record，子会话在继承来的
+// 前缀里读回父 id —— 宿主的 UI 分支不带 header.parentSession（详见模块注释）。
+import { appendBranchIdentity, readBranchParentId, readBranchParentRecord } from './branch-identity.js';
 // TDB service stack: `dsh-tdb-lifecycle` is the only thing that starts/stops it
 // (task-26). This plugin keeps a thin same-origin proxy for the settings page.
 import { registerLifecycleControl } from './lifecycle-control.js';
+// The composer identity chip's transport (task-117 v4): two same-origin routes
+// the client bundle fetches, because it cannot reach this Node side directly.
+import { registerIdentityControl } from './identity-control.js';
 import { SESSION_INIT_MODULE, resolveUserSessionInitDecision } from './user-session-init.js';
 import { SkillClient } from './skill-client.js';
 // Tool surfaces are modules too: src/tools/*.ts self-register, and the loop in
@@ -79,6 +85,14 @@ const DEPLOYMENT_PERSONA_SUFFIX_ORDER = 10200;
  * Mount is one-shot, not a turn, so a short stall is acceptable — but never a
  * long one: an unreachable core would otherwise delay the whole host start.
  */
+/**
+ * How long a writeback waits for the session to acquire an identity before the
+ * outbox moves it to the dead-letter file as identity-unresolved. The turn's own
+ * resolution runs once more after this, so a core that came back gets a chance to
+ * bind the session before the data stops being worth keeping.
+ */
+const IDENTITY_HOLD_BACK_MS = 30 * 1000;
+
 const IDENTITY_RESOLUTION_BUDGET_MS = 4000;
 /** Resolve with a deadline; a stalled promise becomes `undefined`, never a hang. */
 function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
@@ -125,6 +139,13 @@ interface VolatileBlock {
     stateDropped?: string;
     /** 状态里被裁掉的行数（部分丢弃时才有）。 */
     droppedStateLines?: number;
+    /**
+     * 人格尾巴段实际进 prompt 的字符数（整段没进 prompt 就是 0，不是「不知道」）。
+     * r7a4：本地 VolatileBlock 曾经漏了这个键——volatile.ts 的 VolatileBlockResult.audit
+     * 早就有它，本地这份没有，于是「状态段缺失那一轮也要报 personaChars」这个修复
+     * 只能靠类型断言硬塞。两处类型必须同形，否则 tsc 会把语义正确的实现判成错。
+     */
+    personaChars?: number;
   };
 }
 /**
@@ -219,15 +240,7 @@ export function personaBindTarget(binding: {
   return binding.teamId + '/' + (binding.userId ?? '') + '/' + (binding.agentId ?? '');
 }
 
-function questionService(ctx: AgememContext): UserQuestionsLike | undefined {
-  try {
-    const found = (ctx.reflect as { get?: (name: string, strict?: boolean) => unknown } | undefined)
-      ?.get?.('userQuestions', false) as UserQuestionsLike | undefined;
-    return found !== undefined && typeof found.ask === 'function' ? found : undefined;
-  } catch {
-    return undefined;
-  }
-}
+
 /**
  * Where the per-session bindings live. Next to the outbox by default: both are
  * this plugin's own state under DSH_HOME, and keeping them together means one
@@ -485,7 +498,7 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
       // carried no isolation headers.
       const hasConfiguredTriple = identity.teamId !== '' || identity.agentId !== '' || identity.userId !== '';
       if (hasConfiguredTriple) {
-        if (!warnedUnbound && config.identity.askAtSessionStart) {
+        if (!warnedUnbound && config.identity.enabled) {
           warnedUnbound = true;
           log?.debug?.(unboundIdentityMessage(true));
         }
@@ -849,6 +862,50 @@ const gatePending = new Set<string>();
   /** 绑定触发的取卡：onBound 只登记，这里等它完成（失败也算完成）。 */
   const pendingBinds = new Map<string, Promise<void>>();
   /**
+   * B11：子会话 id -> 父会话 id。两条来源，都只认「外键直指」：
+   *   1. 宿主自己写了 `header.parentSession`（`SessionStore.fork` 那条路）；
+   *   2. 否则读子会话继承前缀里的 plugin record（UI 分支那条路不带 header，
+   *      见 src/branch-identity.ts）。
+   * 只在 `agent/created` 解析一次：pre-step 里要同步判「这是不是分支」，
+   * 每次都去扫 log 会让首轮多一次 O(n) 拷贝。
+   */
+  const branchParents = new Map<string, string>();
+  /**
+   * B11：会话 id -> 已写进 log 的身份签名。幂等门：身份没变就不追加记录，
+   * 否则每条 pre-step 都会往会话 log 里塞一条一模一样的 plugin record。
+   */
+  const branchRecords = new Map<string, string>();
+  /**
+   * 把会话现在的绑定写进它自己的 log，供将来从它分支出去的子会话读回父 id。
+   *
+   * 失败只记 debug：这条记录的用途是「下游分支能继承」，它丢了等于退回
+   * 「按新会话重新解析」，绝不能影响这一轮。
+   */
+  const recordBranchIdentity = async (agent: unknown): Promise<void> => {
+    const sid = sessionIdOf(agent);
+    if (sid === undefined) return;
+    const bound = identityStore.get(sid);
+    if (bound === undefined || bound.teamId === '') return;
+    const signature = [bound.teamId, bound.agentId, bound.userId, bound.taskId ?? '', bound.agentLabel ?? ''].join('\u0000');
+    if (branchRecords.get(sid) === signature) return;
+    const session = (agent as { session?: unknown } | undefined)?.session;
+    const outcome = await appendBranchIdentity(session, {
+      sessionId: sid,
+      teamId: bound.teamId,
+      agentId: bound.agentId,
+      userId: bound.userId,
+      ...(bound.taskId === undefined || bound.taskId === '' ? {} : { taskId: bound.taskId }),
+      ...(bound.agentLabel === undefined ? {} : { agentLabel: bound.agentLabel }),
+      version: 1,
+      at: Date.now(),
+    });
+    if (outcome === 'unavailable') {
+      log?.debug?.('agemem: branch identity record not written', { sessionId: sid });
+      return;
+    }
+    branchRecords.set(sid, signature);
+  };
+  /**
    * P2-C：把 Core 说的「这张卡过滤到谁」记进会话绑定。
    *
    * 只在**恰好一个人**时写：0 个（不过滤/只剩全局行）或多于 1 个（多人同场）
@@ -889,16 +946,14 @@ const gatePending = new Set<string>();
     return task;
   };
 
+  // Set by the writeback section below. onBound needs it to release the turns a
+  // pre-identity session has been holding, and the binding is installed first.
+  let flushHeldWrites: (() => void) | undefined;
   const sessionIdentity = installSessionIdentity(ctx, {
     settings: {
-      askAtSessionStart: config.identity.askAtSessionStart,
+      enabled: config.identity.enabled,
       followUserSessionInit: config.identity.followUserSessionInit,
-      askTimeoutMs: config.identity.askTimeoutMs,
       rememberSession: config.identity.rememberSession,
-      skipDefault: config.identity.skipDefault,
-      // The proxy's third question (task_select): the answer becomes the
-      // optional x-tdai-task-id scope. Off = never ask, never send it.
-      askForTask: config.identity.askForTask,
       statePath: config.identity.rememberSession ? sessionStatePathFor(config.identity.statePath, config.writeback.outboxPath) : '',
     },
     base: identity,
@@ -911,13 +966,15 @@ const gatePending = new Set<string>();
       log,
     }),
     // Same source the proxy's init reads (spec §5): the per-user session_init
-    // module. Failures are null and the picker turns them into 'ask'.
+    // module. Failures are null and the resolver falls through to the chip.
     getUserSessionInit: (input) => readSessionInit(input),
     store: identityStore,
-    getQuestions: () => questionService(ctx),
     // Same budget the mount-time resolution uses: three metadata calls, bounded.
     timeoutMs: Math.min(config.server.requestTimeoutMs, IDENTITY_RESOLUTION_BUDGET_MS),
     log,
+    // 分支的父会话（来自父会话自己 log 里的 plugin record，见 branch-identity.ts）。
+    // 同步查表：agent/created 已经解析过并记下来了，pre-step 里不必再读一次 log。
+    knownBranchParent: (agent) => branchParents.get(sessionIdOf(agent) ?? ''),
     onSessionSeen: (sessionId) => {
       latestSessionId = sessionId;
       // 会话第一次出现就取一次卡（task-32）。picker 未配置 userKey 时是惰性的
@@ -934,6 +991,14 @@ const gatePending = new Set<string>();
       }
     },
     onBound: (sessionId, binding) => {
+      // I4: the session just acquired its identity, so every turn queued while it
+      // had none can be delivered NOW instead of burning its hold window (and,
+      // before this, instead of being dead-lettered as "identity missing").
+      try {
+        flushHeldWrites?.();
+      } catch (error) {
+        log?.debug?.('agemem: outbox flush after binding failed', error);
+      }
       // The head pack is frozen once fetched; it was built with the mount triple,
       // so a session that just got bound must refetch instead of serving the
       // wrong team's persona/scene index for the rest of the session.
@@ -958,6 +1023,9 @@ const gatePending = new Set<string>();
   // proxy forwards it to the lifecycle bundle's loopback control plane. Nothing
   // here spawns, probes or stops a service.
   registerLifecycleControl(ctx, log);
+  // The chip is a view over the same store the pre-step writes; mounting it here
+  // keeps both halves on one SessionIdentity instance.
+  if (config.identity.enabled) registerIdentityControl(ctx, sessionIdentity, log);
   // Transport for the skill surface (src/skill-client.ts): the same v3 seam as
   // every other call, so identity headers, envelope unwrapping and the API key
   // have exactly one implementation.
@@ -1201,9 +1269,15 @@ const gatePending = new Set<string>();
     const sid = sessionIdOf(agent);
     if (sid === undefined) return 'no-session-id';
     if (personaCard.currentFor(sid) !== '') return 'already-held';
+    // 父会话的两条来源（顺序有意义）：宿主写进 header 的那个优先（SessionStore.fork
+    // 那条路会带），否则读子会话继承前缀里的 plugin record —— UI 的「在新对话中分支」
+    // 走的 agents.create 不带 header.parentSession（2026-11-22 实测），只有记录可靠。
     const header = (agent as { session?: { header?: { parentSession?: unknown } } } | undefined)?.session?.header;
-    const parentSid = typeof header?.parentSession === 'string' ? header.parentSession : undefined;
+    const headerParent = typeof header?.parentSession === 'string' ? header.parentSession : undefined;
+    const recordParent = headerParent === undefined ? await readBranchParentId(agent) : undefined;
+    const parentSid = headerParent ?? recordParent;
     if (parentSid !== undefined) {
+      branchParents.set(sid, parentSid);
       // 分支（fork/压缩）：静默继承父会话 —— 不弹窗、也不重取一张别的卡。
       //
       // 1) 身份：把父绑定原样写进子会话，记忆捕获与召回因此仍落在同一个
@@ -1215,7 +1289,25 @@ const gatePending = new Set<string>();
       const parentBinding = identityStore.get(parentSid);
       if (parentBinding !== undefined) {
         identityStore.set(sid, { ...parentBinding, source: 'inherited', reason: 'branch of ' + parentSid, at: Date.now() });
+      } else {
+        // 父会话来自上一次进程（store 里没有它的行）：记录本身就带着那份三元组，
+        // 直接照它写 —— 仍是「继承父会话」，不是重新解析。
+        const parentRecord = recordParent === undefined ? undefined : await readBranchParentRecord(agent);
+        if (parentRecord !== undefined && parentRecord.teamId !== '') {
+          identityStore.set(sid, {
+            teamId: parentRecord.teamId,
+            agentId: parentRecord.agentId,
+            userId: parentRecord.userId,
+            ...(parentRecord.taskId === undefined || parentRecord.taskId === '' ? {} : { taskId: parentRecord.taskId }),
+            ...(parentRecord.agentLabel === undefined ? {} : { agentLabel: parentRecord.agentLabel }),
+            source: 'inherited',
+            reason: 'branch of ' + parentSid,
+            at: Date.now(),
+            committedAt: parentRecord.at > 0 ? parentRecord.at : Date.now(),
+          });
+        }
       }
+      await recordBranchIdentity(agent);
       if (personaCard.inheritFrom(parentSid, sid)) return `inherited-bytes`;
       const inherited = cardIdentityOf(parentSid);
       if (inherited === undefined) return 'child-without-identity';
@@ -1228,11 +1320,13 @@ const gatePending = new Set<string>();
       const restoredIdentity = cardIdentityOf(sid);
       const outcome = await personaCard.bind(sid, restoredIdentity, restoredIdentity === undefined ? 'unconfigured' : undefined);
       if (outcome.ok) recordPersonKey(sid, outcome.persons);
+      await recordBranchIdentity(agent);
       return outcome.ok ? 'restored' : 'restored-failed:' + outcome.reason;
     }
     await sessionIdentity.ensureBound(agent, signal);
     const pending = pendingBinds.get(sid);
     if (pending !== undefined) await settleWithin(pending, config.server.requestTimeoutMs);
+    await recordBranchIdentity(agent);
     return 'picked';
   };
   try {
@@ -1589,22 +1683,33 @@ const gatePending = new Set<string>();
             : stateInjected
               ? undefined
               : 'volatile-max-chars';
+    // 人格尾巴段实际进 prompt 的字符数（A5 复核）：与 Core turnChars 同定义——
+    // 同一串 assembleSoulTurn 文本、同一 400 字上限，只是再经整块 maxChars 裁一次。
+    // 整段没进就是 0，绝不拿「Core 给了多少」冒充「注入了多少」。
+    const personaChars = persona.text !== '' && text.includes(persona.text) ? persona.text.length : 0;
+    // r7a4（2026-11-20 第五轮复核）：personaChars 不能绑在「状态段存在」上。
+    // 旧实现把 personaAudit 塞进 `persona.state === undefined ? {} : …` 这条分支里，
+    // 状态段没有（或 Core 没给 state）的那一轮，人格尾巴段的字数被一起丢掉 →
+    // Core 侧 pairs.charsVerified 结构性恒 0，看起来像「从没对上」，其实是「从没收到」。
+    // 生产 39 条 turn-append 里 36 条有 state，剩下 3 条是这条闸的牺牲品（部署副本更旧，另有其因）。
+    const stateAudit =
+      persona.state === undefined
+        ? {}
+        : stateDropped === undefined
+          ? { ...persona.state, injectedStateLines }
+          : {
+              ...persona.state,
+              injectedStateLines,
+              stateDropped,
+              ...(partialDropped > 0 ? { droppedStateLines: partialDropped } : {}),
+            };
+    // 报了就是「注入 0 字」（整段没进 prompt 时），不报才是「这一轮没有尾巴段」。两种语义不能混。
+    const audit = { ...stateAudit, ...(persona.text === '' ? {} : { personaChars }) };
     return {
       ...memory,
       text,
       memoryText,
-      ...(persona.state === undefined
-        ? {}
-        : stateDropped === undefined
-          ? { audit: { ...persona.state, injectedStateLines } }
-          : {
-              audit: {
-                ...persona.state,
-                injectedStateLines,
-                stateDropped,
-                ...(partialDropped > 0 ? { droppedStateLines: partialDropped } : {}),
-              },
-            }),
+      ...(Object.keys(audit).length === 0 ? {} : { audit }),
     };
   };
   /**
@@ -1662,6 +1767,9 @@ const gatePending = new Set<string>();
           await sessionIdentity.ensureBound(agent, signal);
           const pending = sid === undefined ? undefined : pendingBinds.get(sid);
           if (pending !== undefined) await settleWithin(pending, config.server.requestTimeoutMs);
+          // B11：身份在这一步才落定（chip / preset / 自愈都可能在 pre-step 里定），
+          // 所以记录也在这里补一次 —— 幂等门让「身份没变」变成一次 map 查询。
+          await recordBranchIdentity(agent);
         },
         getBlock: async (turnText: string, context: VolatileTurnContext) => {
           const prefetched = inflight.peek(recallKey(context.sessionId, context.turn, turnText)) !== undefined;
@@ -1693,6 +1801,19 @@ const gatePending = new Set<string>();
         maxBytes: config.writeback.maxOutboxBytes,
         deliver: (entry) => {
           const payload = entry.payload as TurnEndPayload & { kind?: string };
+          // I4: a turn queued before its session had an identity is not a failed
+          // turn. 'defer' holds it (no attempt spent, flushed by onBound); 'skip'
+          // is the user's own 本次不关联 and is dropped without a dead letter.
+          const policy = sessionIdentity.writebackPolicy(payload?.sessionId ?? '');
+          if (policy === 'skip') {
+            log?.debug?.('agemem: writeback skipped, this session associates no assets', {
+              source: payload?.kind === 'skill' ? 'skill' : 'l0',
+            });
+            return Promise.resolve({ ok: true } as const);
+          }
+          const hold = policy === 'defer'
+            ? { holdBackMs: IDENTITY_HOLD_BACK_MS }
+            : {};
           // One outbox, two pipelines. The key already separates them
           // (<turnId> vs <turnId>:skill); `kind` tells the delivery apart.
           // Rows written before `kind` existed are L0 (fail-open default).
@@ -1767,6 +1888,7 @@ const gatePending = new Set<string>();
                   reasonClass: classifyWriteFailure(result.status, 'skill-feed'),
                   endpoint: config.paths.skillConversationAdd,
                   messageLen,
+                  ...hold,
                 };
               });
           }
@@ -1849,6 +1971,7 @@ const gatePending = new Set<string>();
                   reasonClass: classifyWriteFailure(result.status, 'l0'),
                   endpoint: config.paths.conversationAdd,
                   messageLen,
+                  ...hold,
                 };
               }
               // No HTTP response at all. A connection reset / failed fetch is
@@ -1872,6 +1995,7 @@ const gatePending = new Set<string>();
                 reasonClass: transportReset ? 'transport-reset' : 'l0-timeout',
                 endpoint: config.paths.conversationAdd,
                 messageLen,
+                ...hold,
               };
             });
         },
@@ -1906,6 +2030,7 @@ const gatePending = new Set<string>();
           log,
         }),
       );
+      flushHeldWrites = () => { void outbox.flush(); };
       disposers.push(outbox.startTimer(config.writeback.retryMs));
     } catch (error) {
       log?.warn?.('agemem: writeback setup failed; turns will not be written back', error);

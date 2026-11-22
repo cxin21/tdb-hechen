@@ -8,9 +8,18 @@ import type { LoggerLike, ToolDefinitionShape } from './types.js';
  * `tools.register()` snapshots `definition.parameters` for the model AS IS — it
  * never compiles the DSL field map. Only `defineTool()` compiles it (dsh-tools
  * lib/index.js: `parameterSchemaSpecToJsonSchema`), and defineTool lives in
- * `@deepseek-ai/dsh-tools`, which is NOT resolvable from an installed profile
- * (measured from ~/.dsh/profiles/desktop/node_modules/@tdb/agemem-dsh:
- * ERR_MODULE_NOT_FOUND). The old code fell back to an identity wrapper and
+ * `@deepseek-ai/dsh-tools`.
+ *
+ * Measured correction (2026-11-22 12:37): the earlier note here said dsh-tools
+ * was "NOT resolvable from an installed profile (ERR_MODULE_NOT_FOUND)". That
+ * was measured with a bare `node` process, which has no interception layer. A
+ * probe inside the real host process (`apply()` → dynamic import) resolved
+ * both `@deepseek-ai/dsh-tools` and `@deepseek-ai/dsh-session` fine — the host
+ * installs its own resolver, so installation-scope packages resolve to
+ * app.asar's node_modules. The decision to emit raw JSON Schema is still the
+ * right one (one less peer on the path, and `register()` really never compiles
+ * parameters), but the reason is "we do not need the peer", not "it is
+ * unreachable". The old code fell back to an identity wrapper and
  * registered `{query:{type:'string',required:true}}` as if it were JSON Schema —
  * a root without `type:'object'` and a `required` that is not an array, i.e. a
  * definition the model can neither validate nor call. register() never looks at

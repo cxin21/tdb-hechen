@@ -25,6 +25,8 @@ export interface OutboxEntry {
   attempts: number;
   nextAt: number;
   createdAt: number;
+  /** Times this entry was deferred for a missing identity (never a failure). */
+  holds?: number;
 }
 
 /** Richer delivery result: lets the caller tell "rejected" from "transport failed". */
@@ -40,6 +42,16 @@ export interface DeliveryOutcome {
   retryable?: boolean;
   /** Short ops-facing class: `http`, `auth`, `transport`, `skill-feed-no-retry-on-response`, … */
   reasonClass?: string;
+  /**
+   * Hold this entry WITHOUT spending an attempt: the failure says nothing about
+   * the payload, only that it cannot be sent yet (the session has no identity
+   * bound). The entry stays in the main queue and comes due after this many ms,
+   * or immediately when something calls flush() — which is what the identity
+   * binding does. Retrying it into the dead-letter file instead (the old
+   * behaviour) turned "the core was briefly unreachable at session start" into
+   * permanent data loss.
+   */
+  holdBackMs?: number;
   /** Endpoint path that failed (never a full URL with credentials). */
   endpoint?: string;
   /** Characters in the attempted batch — a size, never the text itself. */
@@ -77,6 +89,16 @@ export interface OutboxDeps {
   retryMs: number;
   /** 退避上限，缺省 5 分钟，避免线性退避无限增长。 */
   maxBackoffMs?: number;
+  /**
+   * How many times one entry may be deferred for a missing identity before it is
+   * dead-lettered as identity-unresolved. Default 240: at the writer's 30 s hold
+   * that is two hours. Ten minutes (the old 20) was measured too short -- a core
+   * outage, or a user who opened a conversation and came back to it later,
+   * would dead-letter the first turn of a session whose identity was merely
+   * still unknown. Held rows stay in a queue that is already bounded by
+   * maxEntries/maxBytes, so a longer wait costs memory, not correctness.
+   */
+  maxHolds?: number;
   /** 队列条数上限，超出时丢最旧的一条（缺省不限）。 */
   maxEntries?: number;
   /** 队列字节上限（按每条 JSON 的实际字节算），超出时丢最旧（缺省不限）。 */
@@ -103,9 +125,12 @@ export class Outbox {
   private readonly deadPath: string;
   private readonly now: () => number;
   private readonly maxBackoffMs: number;
+  private readonly maxHolds: number;
   private readonly maxEntries: number;
   private readonly maxBytes: number;
   private dropped = 0;
+  /** Entries deferred (not failed) because their session has no identity yet. */
+  private heldBack = 0;
   private warnedCapacity = false;
   private loaded = false;
   private flushing: Promise<void> | undefined;
@@ -115,6 +140,10 @@ export class Outbox {
     this.path = deps.path?.trim() || defaultOutboxPath();
     this.deadPath = deps.deadPath?.trim() || join(dirname(this.path), 'outbox.dead.jsonl');
     this.now = deps.now ?? Date.now;
+    const configuredHolds = deps.maxHolds;
+    this.maxHolds = typeof configuredHolds === 'number' && Number.isFinite(configuredHolds)
+      ? Math.max(1, Math.floor(configuredHolds))
+      : 240;
     const configuredBackoff = deps.maxBackoffMs;
     this.maxBackoffMs = typeof configuredBackoff === 'number' && Number.isFinite(configuredBackoff)
       ? Math.max(1000, configuredBackoff)
@@ -195,6 +224,15 @@ export class Outbox {
     return this.dropped;
   }
 
+  /**
+   * Entries deferred because their session cannot carry an identity yet. They are
+   * NOT failures (no attempt was spent) and they are still in the main queue, so
+   * this is the counter that tells "held" apart from "retrying" in ops output.
+   */
+  heldBackCount(): number {
+    return this.heldBack;
+  }
+
   private entryBytes(entry: OutboxEntry): number {
     try {
       return Buffer.byteLength(JSON.stringify(entry), 'utf8');
@@ -262,6 +300,7 @@ export class Outbox {
           let reasonClass: string | undefined;
           let endpoint: string | undefined;
           let messageLen: number | undefined;
+          let holdBackMs: number | undefined;
           try {
             const outcome = await this.deps.deliver(entry);
             if (outcome === true) {
@@ -275,6 +314,7 @@ export class Outbox {
                 reasonClass = outcome.reasonClass;
                 endpoint = outcome.endpoint;
                 messageLen = outcome.messageLen;
+                holdBackMs = outcome.holdBackMs;
               }
             }
           } catch (error) {
@@ -285,6 +325,30 @@ export class Outbox {
           if (delivered) {
             this.entries.delete(key);
             continue;
+          }
+          // Only a HOLD counts against the hold budget. It used to increment on
+          // every failure, so twenty real rejections followed by one deferral
+          // dead-lettered the row on its first hold -- a held row is not a
+          // failed attempt and must not be charged as one.
+          if (holdBackMs !== undefined) entry.holds = (entry.holds ?? 0) + 1;
+          if (holdBackMs !== undefined && entry.holds! <= this.maxHolds) {
+            // Not a failed attempt: the payload is fine, the session just cannot
+            // carry an identity yet. Keep the count untouched so maxAttempts
+            // counts real rejections, and let the binding flush it immediately.
+            entry.nextAt = this.now() + holdBackMs;
+            this.heldBack += 1;
+            this.deps.log?.debug?.('agemem: outbox held an entry until its session has an identity', {
+              reasonClass,
+              nextInMs: holdBackMs,
+            });
+            continue;
+          }
+          if (holdBackMs !== undefined) {
+            // Held too long: an identity that never arrives must not keep this row
+            // in memory forever. Zero-delete still holds -- it goes to the
+            // dead-letter file under its own class so ops can requeue it later.
+            reasonClass = 'identity-unresolved';
+            retryable = false;
           }
           entry.attempts += 1;
           const exhausted = entry.attempts >= Math.max(1, this.deps.maxAttempts);

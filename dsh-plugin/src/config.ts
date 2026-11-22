@@ -264,45 +264,44 @@ export interface ToolsConfig {
 }
 
 /**
- * 会话开始选身份（task-117 v3）：把 proxy 的「会话初始化 — 选择 Team / Agent」
- * 卡片搬到宿主原生 userQuestions 上。
+ * 会话身份（task-117 v4）：身份在**输入框那一行的下拉面板**里选一次，进会话只读。
  *
- * 为什么放在 pre-step 而不是 Settings：用户原话是「在会话开始的时候弹窗」——
- * team/agent 是**这个会话**的记忆范围，不是一份全局配置；同一个用户换会话
- * 可能要换 team。绑定按 session 持久化，config 三 ID 退化成兜底。
+ * v3 把 proxy 的「会话初始化 — 选择 Team / Agent」卡片搬到宿主原生
+ * userQuestions 上，由 'agent/pre-step' 弹出。这条路有两个结构性缺陷：
+ *
+ *  1. 宿主拒绝在会话跑过一轮之后更换 agent 的 tool 集合，所以「只能在轮次开着
+ *     的时候回答」的问题按构造就来得太晚；回答它还会把正在新建的会话的工作区
+ *     清空（用户实测）。
+ *  2. 它需要 userQuestions 服务，而无头组合里没有 —— 那里只能静默兜底，等于
+ *     弹窗在最重要的场景里根本不存在。
+ *
+ * v4 把选择搬到宿主自己维护「每会话一个选择」的地方：composer 工具行，紧挨着
+ * 模型选择器。chip 打开一个面板（Team / Agent / Task），点确定只**暂存**；
+ * 该会话的第一轮把它落成绑定。之后 chip 变成只读标签 —— 与宿主对自己的
+ * agent preset 用的是同一条规则。
+ *
+ * 仍然放在会话粒度而不是全局配置：team/agent 是**这个会话**的记忆范围，同一个
+ * 用户换会话可能要换 team。绑定按 session 持久化，config 三 ID 退化成兜底。
  */
 export interface IdentityConfig {
   /**
-   * 会话开始的**总开关**：false = 完全不读用户级配置、不弹卡，回落 config 三
-   * ID。给自动化/脚本场景用（那里没有人类回答问题）。
+   * 总开关：false = 完全不解析身份、不取候选、不注册 chip，回落 config 三 ID。
+   * 给无头/自动化组合用（那里没有人去点 chip，也没有 user key 可列 team）。
    *
-   * true 时「弹不弹卡」不由这里决定，而由用户级 session_init 配置决定（见
-   * followUserSessionInit）：preset/bypass 静默，ask 每会话弹。
+   * true（缺省）时**不会弹任何卡片**：chip 常驻，不点就是本次不关联。
    */
-  askAtSessionStart: boolean;
+  enabled: boolean;
   /**
    * 遵循 TDB 用户级 `session_init` 配置（manual_select / default_associate /
    * default_team_id / default_agent_id），与原 MemoryProxy 流程一致。
    *
-   * true（缺省）：读配置 → preset 静默绑定 / bypass 不关联 / ask 弹卡；
-   * false：跳过读配置，一律按 ask 走（即每会话弹卡）。
+   * true（缺省）：preset 静默绑定（其 default_agent_id 在面板里显示为锁定行，
+   * 不可选 —— 就是用户要的「固定展示名称与 id」）/ default_associate=0 不关联；
+   * false：跳过读配置，一律走 chip 与无歧义兜底。
    */
   followUserSessionInit: boolean;
-  /** 提问到人回答的总预算；超时按「跳过」落一条绑定，下一轮不再弹。 */
-  askTimeoutMs: number;
-  /** 绑定写状态文件：重启后同 session 不再弹。false = 只记内存。 */
+  /** 绑定写状态文件：重启后同 session 不再解析。false = 只记内存。 */
   rememberSession: boolean;
-  /** 把「跳过」选项放在第一位（缺省行为是「不关联」，不是随机选一个 team）。 */
-  skipDefault: boolean;
-  /**
-   * 选完 team/agent 后再问一次「这件事属于哪个工作项（Task）」（proxy 的
-   * task_select 阶段）。缺省开：Task 是可选作用域，答「本次不关联任务」或跳过
-   * 都只把 taskId 留空，**不影响** team/agent 的绑定。
-   *
-   * 关掉它 = 从不发 x-tdai-task-id：适合把 Task 只当工作台视图、不作为记忆作用
-   * 域的团队。
-   */
-  askForTask: boolean;
   /** 绑定状态文件路径；空 = 由 outbox 目录推导，只在 rememberSession 时写。 */
   statePath: string;
 }
@@ -479,21 +478,14 @@ export const DEFAULT_CONFIG: AgememConfig = {
     recallTopK: 8,
   },
   identity: {
-    // On by default: it is the proxy's own behaviour, and it is fail-open -- a
-    // composition without the question service logs one warn and uses config.
-    askAtSessionStart: true,
-    // Faithful to the proxy: the per-user session_init config decides whether a
-    // card appears at all (preset/bypass silent, ask every session).
+    // On by default: the chip is passive (it paints itself and answers a click),
+    // and it is fail-open -- a composition without a user key reports inert and
+    // uses the configured triple.
+    enabled: true,
+    // Faithful to the proxy: the per-user session_init config still decides the
+    // whole session silently (preset binds, default_associate=0 skips).
     followUserSessionInit: true,
-    // One minute: long enough that a human reading the card still answers, short
-    // enough that a step is never parked on a card nobody will see.
-    askTimeoutMs: 60000,
     rememberSession: true,
-    skipDefault: false,
-    // The proxy asked task_select too; keeping parity means a session can be
-    // scoped to one work item without any extra config. Fail-open: no task
-    // candidates (or a changed mind on the card) simply leaves taskId empty.
-    askForTask: true,
     statePath: '',
   },
   skill: {
@@ -699,14 +691,10 @@ export function normalizeConfig(raw: unknown, env: Record<string, string | undef
     REFLECTION_MAX_CHARS,
   ));
   const identity = mergeSection(DEFAULT_CONFIG.identity, raw.identity, warnings, 'identity.');
-  // A 0ms question budget would abort before the card is painted; 5 minutes is
-  // the ceiling where a parked step would look like a hung host.
-  identity.askTimeoutMs = Math.floor(pickNumber(
-    identity.askTimeoutMs,
-    DEFAULT_CONFIG.identity.askTimeoutMs,
-    1000,
-    300000,
-  ));
+  // No numeric knob is left in this section: the chip's click is not raced
+  // against a clock (a panel that times out would be worse than none), and the
+  // metadata budget for describe() is the shared IDENTITY_RESOLUTION_BUDGET_MS.
+  if (typeof identity.statePath !== 'string') identity.statePath = DEFAULT_CONFIG.identity.statePath;
   identity.statePath = typeof identity.statePath === 'string' ? identity.statePath.trim() : '';
   const skill = mergeSection(DEFAULT_CONFIG.skill, raw.skill, warnings, 'skill.');
   skill.headPackChars = Math.floor(pickNumber(skill.headPackChars, DEFAULT_CONFIG.skill.headPackChars, 0, 64000));

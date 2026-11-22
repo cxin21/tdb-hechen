@@ -22,6 +22,7 @@ function makeOutbox(overrides: Partial<{
   maxBackoffMs: number;
   maxEntries: number;
   maxBytes: number;
+  maxHolds: number;
   deliver: (entry: any) => Promise<any>;
   path: string;
   deadPath: string;
@@ -38,6 +39,7 @@ function makeOutbox(overrides: Partial<{
     maxBackoffMs: overrides.maxBackoffMs,
     maxEntries: overrides.maxEntries,
     maxBytes: overrides.maxBytes,
+    maxHolds: overrides.maxHolds,
     now: () => clock,
     log: {
       debug: (...parts: unknown[]) => logs.push('debug ' + parts.map(String).join(' ')),
@@ -48,6 +50,28 @@ function makeOutbox(overrides: Partial<{
 }
 
 describe('outbox', () => {
+  it('spends the hold budget only on holds, never on failed attempts', async () => {
+    // Measured 2026-11-22: an entry that had already failed twice was dead-lettered
+    // on its FIRST deferral, because holds were counted on every outcome. A held
+    // row is not a failed attempt -- it carries a payload whose session simply has
+    // no identity yet, and it stays queued so a later binding can flush it.
+    const { outbox, advance } = makeOutbox({
+      maxHolds: 3,
+      maxAttempts: 10,
+      deliver: async () => ({ ok: false, reason: 'identity missing', reasonClass: 'identity-pending', holdBackMs: 30_000 }),
+    });
+    outbox.enqueue('t1', { turnId: 't1' });
+
+    for (let index = 0; index < 3; index += 1) {
+      await outbox.flush();
+      advance(30_000);
+    }
+
+    expect(outbox.pendingCount()).toBe(1);
+    expect(outbox.heldBackCount()).toBe(3);
+    expect(outbox.deadCount()).toBe(0);
+  });
+
   it('dedupes by key so a retried turn is never queued twice', () => {
     const { outbox } = makeOutbox();
     outbox.enqueue('t1', { turnId: 't1' });

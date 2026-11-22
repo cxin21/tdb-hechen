@@ -144,11 +144,39 @@ const BAD_MARKERS = {
   'schema rejected': 'UNSUPPORTED_SCHEMA',
   'volatile recall fell back': 'recall failed',
 };
+
+/**
+ * Where a NEGATIVE marker is allowed to count: 'system/message' events only.
+ *
+ * A plain substring scan over the whole archive is wrong, and it failed exactly
+ * the way these checks exist to prevent -- a false alarm that trains the reader
+ * to ignore the check. Any conversation that merely QUOTES a marker (a bash
+ * command running this very script, a file read of these lines, a tool result
+ * echoing an earlier log) writes it into tool/result and assistant/message
+ * events. On 2026-11-22 all three checks went FAIL because the assistant had
+ * printed this file's source into the transcript; 1680 archives scanned for
+ * real host log text produced ZERO system/message hits.
+ *
+ * The host keeps its own warnings in system/message, which is the one place a
+ * plugin failure actually lands. Scanning there keeps the true positive and
+ * drops the echo.
+ */
+function systemMessages(file) {
+  const text = decodeSessionArchive(file);
+  const out = [];
+  for (const line of text.split('\n')) {
+    if (line === '') continue;
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    if (event !== null && typeof event === 'object' && event.type === 'system/message') out.push(line);
+  }
+  return out;
+}
 let badHits = 0;
 for (const [label, needle] of Object.entries(BAD_MARKERS)) {
   const where = sessions.slice(0, 8).filter((session) => {
     try {
-      return decodeSessionArchive(session.file).includes(needle);
+      return systemMessages(session.file).some((line) => line.includes(needle));
     } catch { return false; }
   });
   if (where.length === 0) record(label, scanned === 0 ? 'PENDING' : 'PASS', scanned === 0 ? 'no recent session to inspect yet' : 'no rejection in the last ' + HOURS + 'h');

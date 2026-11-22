@@ -222,8 +222,14 @@ export interface SoulInjectionReportPayload {
   turn?: number | null;
   /** 稳定段：哪一版人格卡进了 system prompt。 */
   card?: { version: number; hash: string; chars: number };
-  /** 每轮段：真正 append 的字符数（跳过时 chars=0, skipped=true）。 */
-  volatile?: { chars: number; hash: string; skipped: boolean };
+  /**
+   * 每轮段：真正 append 的字符数（跳过时 chars=0, skipped=true）。
+   * personaChars = 其中人格尾巴那一段的字符数，与 Core 召回行 soul.turnChars 同定义
+   * （见 volatile.ts 的 audit）。A4（2026-11-20 复核）：类型里此前没有这个键，
+   * 序列化时被丢掉，Core 侧 pairs.charsVerified 结构性恒 0——那不是「对上了」，
+   * 是「永远收不到」。缺这个键 = 旧插件，该会话不参与 chars 对账。
+   */
+  volatile?: { chars: number; hash: string; skipped: boolean; personaChars?: number };
   /**
    * 通道标记：插件一次注入会 POST 两次（取卡 / 每轮），Core 侧对账要按通道
    * 各算各的（卡冻结后每会话只变一次；volatile 每轮一行且可能 skip）。
@@ -2076,7 +2082,10 @@ export class MemoryClient {
         team: nonEmpty(teamId),
         user: nonEmpty(userId),
         agent: nonEmpty(agentId),
-        sessionKey: nonEmpty(payload.sessionKey),
+        // A4（2026-11-20 复核）：卡行过去只带 sessionId（第二参数进请求头），
+        // body.sessionKey 恒 undefined，stats 的 proof 按 sessionKey 归并会跳过全部卡行，
+        // textHashMatched / sessionsWithProof 结构性恒 0。这里退回 sessionId。
+        sessionKey: nonEmpty(payload.sessionKey ?? sessionId),
         turn: payload.turn ?? null,
       };
       if (payload.card !== undefined) {
@@ -2102,6 +2111,12 @@ export class MemoryClient {
           chars: payload.volatile.chars,
           hash: payload.volatile.hash,
           skipped: payload.volatile.skipped,
+          // A4 复核（2026-11-20 补）：类型上已经有 personaChars，但只要这一层不搬，
+          // Core 的 asVolatile 白名单就永远收不到它 → pairs.charsVerified 结构性恒 0。
+          // 缺键 = 旧调用方没报，该会话不参与 chars 对账（不是「对上了」）。
+          ...(payload.volatile.personaChars === undefined
+            ? {}
+            : { personaChars: payload.volatile.personaChars }),
         };
       }
       // 契约要求 body 只有 team/user/agent/sessionKey/turn/card|volatile：

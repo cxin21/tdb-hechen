@@ -110,7 +110,9 @@ describeGroup('Config schema shape', () => {
     // retired fallback chain — the persona card owns injection now.
     // 2026-11-07 task-26: the eight services.* keys left with the in-plugin
     // dsh-tdb-lifecycle; the page is a thin proxy to its control plane.
-    expect(volatile).toHaveLength(25);
+    // task-117 v4 (m08428): the session-start card is gone, so askTimeoutMs /
+    // skipDefault / askForTask left the identity section (25 -> 22).
+    expect(volatile).toHaveLength(22);
   });
 
   it('keeps the two secrets out of the form: role=secret and NOT volatile', () => {

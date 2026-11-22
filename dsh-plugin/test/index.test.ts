@@ -268,13 +268,20 @@ describe('plugin entry', () => {
       expect(recall.headers.authorization).toBeUndefined();
     });
 
-    it('asks through reflect when a bare property read would throw (task-117 e2e)', async () => {
-      // Measured on the real host: this plugin declares `inject = ['systemPrompt']`,
-      // so reading `ctx.userQuestions` as a property throws
-      // `cannot get property "userQuestions" without inject` and the picker died
-      // with source=skipped. The service is still reachable through
-      // `reflect.get(name, false)`, which is the path this case pins.
+    it('binds a multi-agent account by preset and never touches userQuestions (v4 chip)', async () => {
+      // task-117 v4 (m08428): the session-start card is GONE. Resolution is
+      // silent; the only human input is the composer chip, which stages a choice
+      // that the first turn commits. This case pins both halves: no question
+      // service is consulted (a bare property read of it now throws on the real
+      // host, so a regression would fail loudly), and the identity a step
+      // resolves is what that same turn's data call sends.
       const fixture = installFetch({
+        sessionInit: {
+          manual_select: '0',
+          default_associate: '1',
+          default_team_id: 'team-key',
+          default_agent_id: 'agt-other',
+        },
         fail: metaRoutes({
           ...RESOLVED,
           '/v3/meta/agent/list': {
@@ -286,14 +293,7 @@ describe('plugin entry', () => {
           },
         }),
       });
-      // The asset_confirm card comes first (the config endpoint is not stubbed,
-      // so the read fails and the plugin asks), then the agent question.
-      const ask = vi.fn(async (request: any) => {
-        if (request.questions[0]?.id === 'asset_confirm') {
-          return { answers: [{ id: 'asset_confirm', selected: ['是，关联团队资产'] }] };
-        }
-        return { answers: [{ id: 'agent_select', selected: ['Other (gt-other)'] }] };
-      });
+      const ask = vi.fn(async () => ({ answers: [] }));
       const fake = await startApp({ server: { teamId: '', agentId: '', userId: '', userKey: 'user-key-abc' } }, { userQuestions: { ask } });
       Object.defineProperty(fake.ctx, 'userQuestions', {
         configurable: true,
@@ -303,9 +303,7 @@ describe('plugin entry', () => {
       const listener = fake.firstListener('agent/pre-step')!;
       await runPreStep(listener, { agent: { session: { id: 's-card' } }, turn: 1, step: 1 }, { kind: 'enter', messages: [userMessage('pnpm 用什么?')] });
 
-      expect(ask).toHaveBeenCalledTimes(2);
-      // The step that asked may still race the answer; the bound identity must be
-      // what the NEXT step's data call sends.
+      expect(ask).not.toHaveBeenCalled();
       await runPreStep(listener, { agent: { session: { id: 's-card' } }, turn: 1, step: 2 }, { kind: 'enter', messages: [userMessage('pnpm 用什么?')] });
       const recalls = callsTo(fixture.calls, '/v3/recall').filter((call) => call.body.query !== 'warmup');
       expect(recalls.length).toBeGreaterThan(0);
@@ -318,6 +316,12 @@ describe('plugin entry', () => {
       // memory_recall searched with the configured one, so one turn read two
       // different memories. `sessionId` is the fix; this case pins it.
       const fixture = installFetch({
+        sessionInit: {
+          manual_select: '0',
+          default_associate: '1',
+          default_team_id: 'team-key',
+          default_agent_id: 'agt-other',
+        },
         fail: metaRoutes({
           ...RESOLVED,
           '/v3/meta/agent/list': {
@@ -331,15 +335,9 @@ describe('plugin entry', () => {
       });
       const registered: Array<{ name: string; execute: (args: any) => Promise<string> }> = [];
       const tools = { register: (definition: any) => { registered.push(definition); return () => {}; } };
-      const ask = vi.fn(async (request: any) => {
-        if (request.questions[0]?.id === 'asset_confirm') {
-          return { answers: [{ id: 'asset_confirm', selected: ['是，关联团队资产'] }] };
-        }
-        return { answers: [{ id: 'agent_select', selected: ['Other (gt-other)'] }] };
-      });
       const fake = await startApp(
         { server: { teamId: '', agentId: '', userId: '', userKey: 'user-key-abc' } },
-        { userQuestions: { ask }, tools },
+        { tools },
       );
 
       const listener = fake.firstListener('agent/pre-step')!;
@@ -423,17 +421,19 @@ describe('plugin entry', () => {
       expect(fake.logs.filter((line) => line.startsWith('warn') && line.includes('/v3/recall'))).toHaveLength(0);
     });
 
-    it('fails OPEN when the user config cannot be read (warmup runs, the card asks)', async () => {
+    it('fails OPEN when the user config cannot be read (warmup runs, resolution stays silent)', async () => {
       const fixture = installFetch({
         // The mount read decides whether background reads may run. A 5xx must NOT
         // be read as "opted out": losing the warmup costs a cold turn, so the
-        // gate opens and the picker falls back to asking.
+        // gate opens. v4: an unreadable config no longer produces a card — it
+        // degrades to the silent path (one team + one agent still binds), and
+        // userQuestions is never consulted at all.
         fail: metaRoutes(RESOLVED, (path) =>
           path.endsWith('/v3/meta/config/user/get') ? new Response('boom', { status: 500 }) : undefined),
       });
       const ask = vi.fn(async () => ({ answers: [] }));
       const fake = await startApp(
-        { server: { teamId: 'team-key', agentId: 'agt-key', userId: 'usr-key', userKey: 'user-key-abc' } },
+        { server: { teamId: '', agentId: '', userId: '', userKey: 'user-key-abc' } },
         { userQuestions: { ask } },
       );
       await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/meta/config/user/get')).toHaveLength(1));
@@ -446,8 +446,10 @@ describe('plugin entry', () => {
         { agent: { session: { id: 's-fail-open' } }, turn: 1, step: 1 },
         { kind: 'enter', messages: [userMessage('pnpm 用什么?')] },
       );
-      expect(ask).toHaveBeenCalled();
-      expect(ask.mock.calls[0][0].questions[0].id).toBe('asset_confirm');
+      expect(ask).not.toHaveBeenCalled();
+      const recalls = callsTo(fixture.calls, '/v3/recall').filter((call) => call.body.query !== 'warmup');
+      expect(recalls.length).toBeGreaterThan(0);
+      expect(recalls[recalls.length - 1].headers['x-tdai-agent-id']).toBe('agt-key');
     });
 
     it('keeps the background warmup quiet for a bypass user (no team read before the decision)', async () => {
@@ -1642,6 +1644,35 @@ describe('plugin entry', () => {
       // 尾部优先级行被整行裁掉：仍是部分注入，但必须留痕。
       expect(appended.stateDropped).toBe('over-budget-partial');
       expect(appended.droppedStateLines).toBe(1);
+    } finally {
+      if (prev === undefined) delete process.env.TDB_PERSONA_LOG;
+      else process.env.TDB_PERSONA_LOG = prev;
+    }
+  });
+
+  it('A4（r7a4）：没有状态段的那一轮，人格尾巴段的 personaChars 仍必须上报', async () => {
+    // 旧实现把 personaChars 挂在 `persona.state === undefined ? {} : …` 这条分支里：
+    // 状态段缺席时字数被一起丢掉 → Core 侧 pairs.charsVerified 结构性恒 0，
+    // 看起来像「从没对上」，其实是「从没收到」。这条锁的是「两件事互不牵连」。
+    const logDir = mkdtempSync(path.join(tmpdir(), 'agemem-pchars-'));
+    tempDirs.push(logDir);
+    const logPath = path.join(logDir, 'persona-injection.jsonl');
+    const prev = process.env.TDB_PERSONA_LOG;
+    process.env.TDB_PERSONA_LOG = logPath;
+    try {
+      installFetch({
+        card: { version: 9, hash: 'cardhash-9', text: '### 名称' + LF + '何晨' },
+        turn: { text: '心境：稳', openLoops: [] },
+      });
+      const fake = await startApp();
+      const listener = fake.firstListener('agent/pre-step');
+      if (!listener) throw new Error('pre-step listener not installed');
+      await runPreStep(listener, { agent: { session: { id: 's1' } }, turn: 1, step: 1 }, { kind: 'enter', messages: [userMessage('今天做什么?', 'u1')] });
+      const lines = readFileSync(logPath, 'utf8').trim().split(LF).map((line: string) => JSON.parse(line));
+      const appended = lines.find((row: any) => row.event === 'turn-append');
+      expect(appended).toBeDefined();
+      expect(appended.state).toBeUndefined();
+      expect(appended.personaChars).toBe('心境：稳'.length);
     } finally {
       if (prev === undefined) delete process.env.TDB_PERSONA_LOG;
       else process.env.TDB_PERSONA_LOG = prev;
